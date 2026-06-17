@@ -31,6 +31,7 @@ import {
   systemClock,
 } from './ports.js';
 import { isCleanPass, routeEvaluate } from './state-machine.js';
+import { autoStepGate, type StepGate } from './step-gate.js';
 
 export interface RoleModel {
   modelId: ModelId;
@@ -64,6 +65,11 @@ export interface EngineDeps {
   ledger: LedgerPort;
   persistence: PersistencePort;
   clock?: Clock;
+  /**
+   * Optional manual single-step gate. When present, the engine awaits it before every
+   * phase (drives the cockpit's AUTO↔STEP toggle). Defaults to {@link autoStepGate}.
+   */
+  stepGate?: StepGate;
 }
 
 export interface CycleResult {
@@ -93,6 +99,7 @@ function buildSystemContext(spec: LoopSpec): string {
 
 export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleResult> {
   const clock = deps.clock ?? systemClock;
+  const stepGate = deps.stepGate ?? autoStepGate;
   const { loopId } = spec;
   const runId = `run-${loopId}-c${spec.cycle}`;
   const { workspaceDir } = await deps.artifacts.provision(loopId);
@@ -183,6 +190,10 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
     iteration: number,
   ): Promise<PhaseResult | null> {
     if (paused) return null;
+    if (deps.stepGate) {
+      log('info', `awaiting manual step → ${phase.toUpperCase()}${iteration > 0 ? ` (rework ${iteration})` : ''}`, 'step');
+      await stepGate.beforePhase({ loopId, runId, cycle: spec.cycle, phase, iteration });
+    }
     const model = roleOf(roleKey);
     const session = await startRole(role, model);
     const startedAt = clock.now();
@@ -206,6 +217,10 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
 
   async function runEvaluate(iteration: number, targetSummary: string): Promise<OutcomeVerdict | null> {
     if (paused) return null;
+    if (deps.stepGate) {
+      log('info', `awaiting manual step → EVALUATE${iteration > 0 ? ` (rework ${iteration})` : ''}`, 'step');
+      await stepGate.beforePhase({ loopId, runId, cycle: spec.cycle, phase: 'evaluate', iteration });
+    }
     const model = roleOf('reviewer');
     const session = await startRole('reviewer', model);
     const startedAt = clock.now();

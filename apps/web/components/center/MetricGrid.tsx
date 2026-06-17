@@ -1,21 +1,28 @@
 'use client';
 
-import { getMetrics } from '@/lib/fixtures';
+import { useLiveMetrics } from '@/lib/live';
 import { SectionLabel, StatusDot } from '@/components/atoms';
 import { MetricCard } from './MetricCard';
 
 /** REAL-TIME METRICS section: live header + responsive grid of metric tiles. */
 export function MetricGrid({ loopId }: { loopId: string }) {
-  const metrics = getMetrics(loopId);
+  const { metrics, live } = useLiveMetrics(loopId);
 
   return (
     <section className="flex flex-col gap-3">
       <SectionLabel
         right={
-          <span className="tabular inline-flex items-center gap-1.5 text-2xs font-medium text-accent-green">
-            <StatusDot accent="green" live size={6} />
-            LIVE
-          </span>
+          live ? (
+            <span className="tabular inline-flex items-center gap-1.5 text-2xs font-medium text-accent-green">
+              <StatusDot accent="green" live size={6} />
+              LIVE
+            </span>
+          ) : (
+            <span className="tabular inline-flex items-center gap-1.5 text-2xs font-medium text-muted">
+              <StatusDot accent="blue" size={6} />
+              MOCK
+            </span>
+          )
         }
       >
         REAL-TIME METRICS

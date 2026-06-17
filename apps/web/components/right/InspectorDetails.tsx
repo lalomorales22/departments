@@ -9,15 +9,15 @@ import {
   ListChecks,
   Search,
 } from 'lucide-react';
-import type { ArtifactKind } from '@departments/shared';
+import type { Artifact, ArtifactKind, MemoryItem } from '@departments/shared';
 import { RUBRIC_CATEGORY_LABELS } from '@departments/shared';
 import {
   getArtifacts,
   getGates,
   getLoop,
   getMemory,
-  getMetrics,
 } from '@/lib/fixtures';
+import { useLiveMetrics, useLoopInspect } from '@/lib/live';
 import { accentVar, rubricAccent } from '@/lib/status-theme';
 import { DeltaChip, SectionLabel, Sparkline } from '@/components/atoms';
 
@@ -58,10 +58,41 @@ function Block({
 
 export function InspectorDetails({ loopId }: { loopId: string }) {
   const loop = getLoop(loopId);
-  const metrics = getMetrics(loopId);
+  const { metrics } = useLiveMetrics(loopId);
   const gates = getGates(loopId);
-  const artifacts = getArtifacts(loopId);
-  const memory = getMemory(loopId);
+  const inspect = useLoopInspect(loopId);
+
+  // Prefer REAL artifacts/memory from the loop's git workspace; fall back to fixtures
+  // when the loop has never run locally.
+  const artifacts: Artifact[] = useMemo(() => {
+    if (inspect?.exists && inspect.artifacts.length > 0) {
+      return inspect.artifacts.map((a, i) => ({
+        id: `live-art-${loopId}-${i}`,
+        orgId: 'org-local',
+        loopId,
+        kind: a.kind,
+        path: a.path,
+        version: a.version,
+        sizeBytes: a.sizeBytes,
+        updatedAt: '',
+      }));
+    }
+    return getArtifacts(loopId);
+  }, [inspect, loopId]);
+
+  const memory: MemoryItem[] = useMemo(() => {
+    if (inspect?.exists && inspect.memory.length > 0) {
+      return inspect.memory.map((m, i) => ({
+        id: `live-mem-${loopId}-${i}`,
+        orgId: 'org-local',
+        loopId,
+        path: m.path,
+        summary: m.summary,
+        createdAt: '',
+      }));
+    }
+    return getMemory(loopId);
+  }, [inspect, loopId]);
 
   const [query, setQuery] = useState('');
   const filteredMemory = useMemo(() => {

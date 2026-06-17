@@ -13,6 +13,8 @@ import { BudgetLedger } from '@departments/cost';
 import type { DeptEvent } from '@departments/events';
 import { bootstrap } from './bootstrap.js';
 import { runCycle, type CycleResult, type EngineDeps, type LoopSpec } from './engine.js';
+import { NoProgressDetector, type NoProgressConfig } from './no-progress.js';
+import type { StepGate } from './step-gate.js';
 import type { ArtifactPort, CapAction, LedgerPort, MemoryPort, PersistencePort, RunRecord } from './ports.js';
 
 export interface RunLoopOptions {
@@ -36,6 +38,10 @@ export interface RunLoopOptions {
   /** Stream sink for events (the CLI writes these as NDJSON). */
   onEvent?: (e: DeptEvent) => void;
   onRun?: (r: RunRecord) => void;
+  /** Manual single-step gate (AUTO↔STEP); omit for auto-progress. */
+  stepGate?: StepGate;
+  /** No-progress detector tuning (H, health drop/recover). */
+  noProgress?: NoProgressConfig;
 }
 
 const DEFAULT_ROLES: LoopSpec['roles'] = {
@@ -91,6 +97,10 @@ export interface RunLoopResult {
   results: CycleResult[];
   /** Absolute path to the loop's git working tree (where artifacts live). */
   workspaceDir: string;
+  /** True when the no-progress detector auto-paused the loop (distinct from budget pause). */
+  noProgressPaused: boolean;
+  /** Final loop health (0–100) per the no-progress detector. */
+  health: number;
 }
 
 export async function runLoopLocally(opts: RunLoopOptions): Promise<RunLoopResult> {
@@ -104,22 +114,45 @@ export async function runLoopLocally(opts: RunLoopOptions): Promise<RunLoopResul
   const budget = new BudgetLedger();
   budget.registerLoop({ orgId, loopId, hardCapUsd: opts.budgetCapUsd ?? 1000 });
 
+  // Observe metric movement per cycle (excluding the engine-emitted `health` metric
+  // itself), tee'ing every event to the caller's NDJSON sink.
+  let metricMovedThisCycle = false;
+  const observe = (e: DeptEvent): void => {
+    if (e.kind === 'metric' && e.payload.key !== 'health' && Math.abs(e.payload.delta) > 0) {
+      metricMovedThisCycle = true;
+    }
+    opts.onEvent?.(e);
+  };
+
+  const persistence = streamingPersistence(observe, opts.onRun);
   const deps: EngineDeps = {
     runtime: opts.runtime ?? new FakeCmaRuntime(),
     artifacts,
     memory,
     rubrics: new RubricLibrary(),
     ledger: ledgerPort(budget),
-    persistence: streamingPersistence(opts.onEvent, opts.onRun),
+    persistence,
+    stepGate: opts.stepGate,
+  };
+
+  /** Emit a driver-level event on the same monotonic per-loop seq as the engine. */
+  const emit = (e: Omit<DeptEvent, 'seq'>): void => {
+    const stamped = { ...e, seq: persistence.nextSeq(loopId) } as DeptEvent;
+    void persistence.recordEvent(stamped);
   };
 
   const seeds = seedsFor(loopId, mission);
   const boot = await bootstrap(loopId, artifacts, seeds);
 
+  const detector = new NoProgressDetector(opts.noProgress);
   const results: CycleResult[] = [];
   const cycles = Math.max(1, opts.cycles ?? 1);
   let cycle = boot.cycle;
+  let noProgressPaused = false;
+  let driverSeq = 0;
+
   for (let i = 0; i < cycles; i += 1) {
+    metricMovedThisCycle = false;
     const result = await runCycle(
       {
         loopId,
@@ -132,8 +165,55 @@ export async function runLoopLocally(opts: RunLoopOptions): Promise<RunLoopResul
       deps,
     );
     results.push(result);
+    // Budget cap PRECEDENCE: a hard-cap pause halts before any no-progress logic.
     if (result.paused) break;
+
+    // No-progress detection runs at the cycle boundary on a cleanly-completed cycle.
+    const meaningful = result.snapshots.some((s) => s.meaningful);
+    const outcome = detector.record({ meaningful, metricMoved: metricMovedThisCycle });
+    const ts = new Date().toISOString();
+    const runId = result.runId;
+    emit({
+      id: `${runId}-health-${driverSeq++}`,
+      loopId,
+      runId,
+      ts,
+      kind: 'metric',
+      payload: {
+        key: 'health',
+        name: 'Loop Health',
+        value: outcome.health,
+        display: `${outcome.health}%`,
+        delta: outcome.stalled ? -1 : 1,
+        goodDirection: 'up',
+        unit: 'percent',
+      },
+    });
+    if (outcome.shouldPause) {
+      noProgressPaused = true;
+      emit({
+        id: `${runId}-noprogress`,
+        loopId,
+        runId,
+        ts,
+        kind: 'log',
+        payload: {
+          level: 'error',
+          source: 'guardrail',
+          message: `no-progress detector: ${outcome.consecutiveStalls} cycle(s) with no meaningful diff or metric movement — auto-pausing (health ${outcome.health}%).`,
+        },
+      });
+      emit({
+        id: `${runId}-noprogress-pause`,
+        loopId,
+        runId,
+        ts,
+        kind: 'status',
+        payload: { scope: 'loop', targetId: loopId, loopStatus: 'paused' },
+      });
+      break;
+    }
     cycle += 1;
   }
-  return { results, workspaceDir };
+  return { results, workspaceDir, noProgressPaused, health: detector.health };
 }

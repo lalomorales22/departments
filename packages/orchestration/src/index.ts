@@ -12,4 +12,7 @@ export * from './state-machine.js';
 export * from './bootstrap.js';
 export * from './engine.js';
 export * from './local-driver.js';
+export * from './no-progress.js';
+export * from './step-gate.js';
+export * from './stream-persistence.js';
 // `./cli` is a runnable entry (see package.json exports), not re-exported here.

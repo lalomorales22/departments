@@ -5,7 +5,7 @@
 
 Departments is an orchestration platform that turns any business function, product, or project into a self-improving **Loop** — an autonomous department of AI agents that owns a mission and runs a perpetual **PLAN → EXECUTE → EVALUATE → IMPROVE → MEMORY** cycle. A top-level `loop ceo` supervises every department, so the whole organization becomes a recursive tree of loops — *loops all the way down*.
 
-> **Status:** Design/specification phase. This `README.md`, the architecture, and the [5‑phase build plan](./TASKS.md) are the founding artifacts. The repo is itself a `loop software-builder` — its memory lives in `README.md`, `TASKS.md`, and (once work starts) `HANDOFF.md`.
+> **Status:** Build in progress — **Phases 1–3 of the [5‑phase plan](./TASKS.md) are complete** (Foundations · The Loop Engine · The Live Dashboard). A real loop runs a full cycle on the engine and drives the cockpit live over a reconnect‑safe realtime spine. The repo is itself a `loop software-builder` — its current memory lives in [`HANDOFF.md`](./HANDOFF.md) (read it first), with `README.md` + `TASKS.md` as the founding spec.
 
 ---
 
@@ -353,7 +353,8 @@ departments/
 │   ├── agent-runtime/  # CMA abstraction (cma/ + selfhosted/) + models/ (tier policy) + prompts/ skills/
 │   ├── artifacts/      # git provisioning, snapshot/versioning, S3 sync, embeddings
 │   ├── memory/         # memory-store sync + pgvector index + retrieval
-│   ├── events/         # unified Event schema + CMA-SSE→Event normalizer + Redis Streams
+│   ├── events/         # the frozen unified Event schema + resume/dedupe contract
+│   ├── realtime/       # the reconnect-safe spine: EventStream (in-mem + Redis) + resume/dedupe + topics + reconnect
 │   ├── cost/           # caching helpers, batch submission, count_tokens, budget ledger
 │   ├── rubrics/        # checks-&-balances rubric library
 │   ├── db/             # schema, migrations, RLS policies
@@ -394,9 +395,9 @@ The end‑user experience is one command in the dashboard's command bar:
 
 Build is sequenced into five demoable, de‑risking phases — full detail in **[TASKS.md](./TASKS.md)**:
 
-1. **Foundations** — monorepo, design system, mission‑control shell, data model + RLS, auth, mock realtime, frozen `Event` protocol, cost‑ledger & cache seams.
-2. **The Loop Engine** — one loop runs a full real cycle on CMA: agent roster, artifacts/Git, independent grader, model tiering + caching, budget enforcement.
-3. **The Live Dashboard** — the whole cockpit wired to a real loop over a reconnect‑safe realtime spine; no‑progress detector.
+1. ✅ **Foundations** — monorepo, design system, mission‑control shell, data model + RLS, auth, mock realtime, frozen `Event` protocol, cost‑ledger & cache seams.
+2. ✅ **The Loop Engine** — one loop runs a full real cycle on CMA: agent roster, artifacts/Git, independent grader, model tiering + caching, budget enforcement.
+3. ✅ **The Live Dashboard** — the whole cockpit wired to a real loop over a reconnect‑safe realtime spine (`EventStream` → SSE/WS, resume‑by‑`seq` + dedupe); the no‑progress detector + manual single‑step.
 4. **Hierarchy & Meta‑Loop** — L1–L4 trees, CEO coordination (Batch reviews), scheduling, rolled‑up health; concurrency/cadence + irreversible‑action gating + org‑wide cap enforced here.
 5. **Production Hardening** — full cost suite tuned on evals, enforced gates, multi‑tenancy/security, observability/analytics, polish, launch.
 

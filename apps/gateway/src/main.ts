@@ -44,6 +44,7 @@
  */
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
+import { WsAdapter } from '@nestjs/platform-ws';
 import { AppModule } from './app.module.js';
 
 const PORT = Number(process.env.PORT ?? 4000);
@@ -54,11 +55,13 @@ async function bootstrap(): Promise<void> {
   // [AUTH MIDDLEWARE]  app.use(authMiddleware)             — Phase 2
   // [RBAC GUARDS]      app.useGlobalGuards(new RbacGuard()) — Phase 2
   // [RLS ORG-CONTEXT]  app.useGlobalInterceptors(orgCtx)    — Phase 2
-  // [WS HUB / REPLAY]  attach the realtime gateway + mock replay — Phase 2/3
+  // [WS HUB / REPLAY]  RealtimeModule fans the per-loop EventStream out over /ws with
+  //                    resume-by-seq + dedupe + heartbeats (Phase 3, this build).
+  app.useWebSocketAdapter(new WsAdapter(app));
 
   await app.listen(PORT);
   // eslint-disable-next-line no-console
-  console.log(`[gateway] STUB listening on :${PORT} (GET /health, GET /loops)`);
+  console.log(`[gateway] listening on :${PORT} (GET /health, GET /loops, WS /ws)`);
 }
 
 void bootstrap();

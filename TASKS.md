@@ -132,7 +132,9 @@ Because a loop "re‑runs constantly," cost and runaway control are **structural
 
 ---
 
-## Phase 3 — The Live Dashboard
+## Phase 3 — The Live Dashboard  ✅ SHIPPED (Cycle 3, 2026-06-17)
+
+> **Status:** complete. The cockpit binds to a real loop over the reconnect‑safe spine (`@departments/realtime` `EventStream` → SSE locally / NestJS WS gateway in prod, resume‑by‑`seq` + dedupe‑by‑`id` + always‑settle). The no‑progress detector + manual single‑step are live. Redis/WS/Postgres paths are authored + gated behind Docker. See [`HANDOFF.md`](./HANDOFF.md) for the full Cycle‑3 record. The remaining checklist items below are kept for provenance (Kanban live task state needs a tasks projection outside the frozen `Event` protocol; xterm virtualization deferred).
 
 **Goal.** Wire the full cockpit to a *real* running loop: terminal/logs, agent statuses, pipeline, kanban, real‑time metrics, and inspector all update live over a reconnect‑safe **CMA‑SSE → normalizer → Redis Streams → WS → UI** spine, plus the no‑progress detector.
 

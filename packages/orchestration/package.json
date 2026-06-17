@@ -21,6 +21,7 @@
     "@departments/cost": "workspace:*",
     "@departments/events": "workspace:*",
     "@departments/memory": "workspace:*",
+    "@departments/realtime": "workspace:*",
     "@departments/rubrics": "workspace:*",
     "@departments/shared": "workspace:*"
   },

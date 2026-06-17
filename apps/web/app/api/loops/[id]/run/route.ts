@@ -1,13 +1,20 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
+import { serverRealtime, sanitizeLoopId, type RunHandle } from '@/lib/server/realtime';
 
 /**
- * POST /api/loops/:id/run — run ONE real engine cycle for the loop and stream its
- * events back as NDJSON (one DeptEvent JSON per line). We spawn the orchestration
- * CLI as a subprocess (rather than importing the Node-only engine into the webpack
- * bundle), so the cockpit is driven by the actual `@departments/orchestration` engine
- * + FakeCmaRuntime + real git artifacts. This is the Phase 2 "minimal run-a-loop"
- * trigger; the reconnect-safe WS spine arrives in Phase 3.
+ * POST /api/loops/:id/run — fire ONE real engine cycle for the loop.
+ *
+ * Phase 3 decouples "run a loop" from "watch a loop": this route spawns the engine
+ * subprocess and pipes its NDJSON events INTO the server-side EventStream (re-stamping
+ * the authoritative per-loop seq), then returns immediately. Clients receive events by
+ * subscribing to `GET /api/loops/:id/stream` (SSE) — so killing/reopening a watcher
+ * mid-run loses nothing (resume-by-seq). The subprocess keeps running in the server
+ * process, independent of this request.
+ *
+ *   ?mode=step  — pause before each phase; advance via POST /api/loops/:id/step
+ *   ?stall=1    — simulate a stuck loop (demoes the no-progress auto-pause)
+ *   ?cycles=N   — run N cycles (default 1)
  */
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -15,67 +22,88 @@ export const dynamic = 'force-dynamic';
 // Next dev runs with cwd = apps/web; the monorepo root is two levels up.
 const REPO_ROOT = resolve(process.cwd(), '..', '..');
 
-export async function POST(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
-  const loopId = id.replace(/[^a-zA-Z0-9_-]/g, '');
+  const loopId = sanitizeLoopId(id);
+  const url = new URL(req.url);
+  const mode = url.searchParams.get('mode') === 'step' ? 'step' : 'auto';
+  const stall = url.searchParams.get('stall') === '1';
+  const cycles = clampCycles(url.searchParams.get('cycles'));
 
-  // Hoisted so cancel() can kill the subprocess on client abort.
-  let child: ChildProcessWithoutNullStreams | undefined;
-  let closed = false;
+  const rt = serverRealtime();
+  if (rt.runs.has(loopId)) {
+    return Response.json({ started: false, reason: 'already-running', mode }, { status: 409 });
+  }
 
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      const enc = new TextEncoder();
-      const errEvent = (message: string, code: string) =>
-        enc.encode(
-          JSON.stringify({
-            id: `run-err-${loopId}-${code}`,
-            seq: 0,
-            loopId,
-            ts: new Date().toISOString(),
-            kind: 'error',
-            payload: { message, code },
-          }) + '\n',
-        );
-      const safeEnqueue = (chunk: Uint8Array) => {
-        if (!closed) controller.enqueue(chunk);
-      };
-      const finish = () => {
-        if (!closed) {
-          closed = true;
-          controller.close();
-        }
-      };
-      child = spawn(
-        'pnpm',
-        ['--filter', '@departments/orchestration', 'exec', 'tsx', 'src/cli.ts', loopId, '--stream'],
-        { cwd: REPO_ROOT, env: process.env },
-      );
-      child.stdout.on('data', (d: Buffer) => safeEnqueue(new Uint8Array(d)));
-      child.stderr.on('data', (d: Buffer) => console.error('[loop-run]', d.toString()));
-      child.on('error', (e) => {
-        safeEnqueue(errEvent(`failed to launch engine: ${e.message}`, 'SPAWN'));
-        finish();
-      });
-      child.on('close', (code) => {
-        // Surface a non-zero exit as a terminal error event (the engine's stack went to
-        // stderr, server-side only) so the client sees the failure instead of a silent end.
-        if (code && code !== 0) safeEnqueue(errEvent(`engine exited with code ${code}`, 'EXIT'));
-        finish();
-      });
-    },
-    // Client aborted (tab close, navigation, unmount mid-run) → kill the subprocess so
-    // it doesn't keep running detached.
-    cancel() {
-      closed = true;
-      child?.kill();
-    },
+  const args = ['--filter', '@departments/orchestration', 'exec', 'tsx', 'src/cli.ts', loopId, '--stream'];
+  if (mode === 'step') args.push('--step');
+  if (stall) args.push('--stall');
+  args.push('--cycles', String(cycles));
+
+  let child;
+  try {
+    child = spawn('pnpm', args, { cwd: REPO_ROOT, env: process.env });
+  } catch (e) {
+    await rt.ingest(loopId, errEvent(loopId, `failed to launch engine: ${msg(e)}`, 'SPAWN'));
+    return Response.json({ started: false, reason: 'spawn-failed', mode }, { status: 500 });
+  }
+
+  const handle: RunHandle = { child, mode, startedAt: Date.now() };
+  rt.runs.set(loopId, handle);
+
+  // Pipe NDJSON stdout → ingest into the shared store (events outlive this request).
+  let buffer = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => {
+    buffer += chunk;
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed) void rt.ingest(loopId, safeParse(trimmed));
+    }
+  });
+  child.stderr.on('data', (d: Buffer) => console.error('[loop-run]', d.toString()));
+
+  child.on('error', (e) => {
+    void rt.ingest(loopId, errEvent(loopId, `engine error: ${e.message}`, 'ENGINE'));
+    rt.runs.delete(loopId);
+  });
+  child.on('close', (code) => {
+    if (buffer.trim()) void rt.ingest(loopId, safeParse(buffer.trim()));
+    if (code && code !== 0) {
+      void rt.ingest(loopId, errEvent(loopId, `engine exited with code ${code}`, 'EXIT'));
+    }
+    rt.runs.delete(loopId);
   });
 
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'application/x-ndjson; charset=utf-8',
-      'Cache-Control': 'no-cache, no-transform',
-    },
-  });
+  return Response.json({ started: true, mode, cycles });
+}
+
+function clampCycles(raw: string | null): number {
+  const n = Number(raw ?? '1');
+  return Number.isFinite(n) ? Math.min(20, Math.max(1, Math.floor(n))) : 1;
+}
+
+function safeParse(line: string): unknown {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null; // non-JSON diagnostic line — ignored by ingest
+  }
+}
+
+function errEvent(loopId: string, message: string, code: string) {
+  return {
+    id: `run-err-${loopId}-${code}-${Date.now()}`,
+    seq: 0,
+    loopId,
+    ts: new Date().toISOString(),
+    kind: 'error',
+    payload: { message, code },
+  };
+}
+
+function msg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }

@@ -11,9 +11,10 @@ import {
   ShieldCheck,
   type LucideIcon,
 } from 'lucide-react';
+import { StepForward } from 'lucide-react';
 import { accentVar, glowVar } from '@/lib/status-theme';
-import { getPipelineState } from '@/lib/fixtures';
-import { useCockpit } from '@/lib/store';
+import { useLivePipeline, useRunMode, useRunStatus } from '@/lib/live';
+import { useRealtime } from '@/lib/realtime';
 import { SectionLabel } from '@/components/atoms';
 import { cn } from '@/lib/cn';
 
@@ -30,9 +31,15 @@ type StageStatus = 'pending' | 'active' | 'complete' | 'error';
 
 /** The signature lifecycle visualizer: PLAN → EXECUTE → EVALUATE → OPTIMIZE → MEMORY. */
 export function LoopPipeline({ loopId }: { loopId: string }) {
-  const pipeline = getPipelineState(loopId);
-  const auto = useCockpit((s) => s.pipelineAutoLayout);
-  const toggleAuto = useCockpit((s) => s.toggleAutoLayout);
+  const pipeline = useLivePipeline(loopId);
+  const mode = useRunMode(loopId);
+  const runStatus = useRunStatus(loopId);
+  const setMode = useRealtime((s) => s.setMode);
+  const step = useRealtime((s) => s.step);
+
+  const auto = mode === 'auto';
+  // In manual STEP mode, an active run waits for an explicit advance.
+  const canStep = mode === 'step' && runStatus === 'running';
 
   return (
     <div className="flex flex-col gap-3 px-4 py-3">
@@ -42,10 +49,25 @@ export function LoopPipeline({ loopId }: { loopId: string }) {
             <span className="tabular text-2xs text-muted" data-machine>
               CYCLE #{pipeline.cycleCount}
             </span>
+            {canStep && (
+              <button
+                type="button"
+                onClick={() => void step(loopId)}
+                title="Advance one phase"
+                aria-label="Advance one phase"
+                className="focus-ring tabular inline-flex items-center gap-1 rounded-sm border border-accent-cyan/40 px-1.5 py-0.5 text-2xs uppercase tracking-wider text-accent-cyan transition-colors hover:text-text"
+                style={{ backgroundColor: 'color-mix(in oklab, var(--accent-cyan) 12%, transparent)' }}
+                data-machine
+              >
+                <StepForward className="h-3 w-3" strokeWidth={2} aria-hidden />
+                STEP
+              </button>
+            )}
             <button
               type="button"
-              onClick={toggleAuto}
+              onClick={() => setMode(loopId, auto ? 'step' : 'auto')}
               aria-pressed={auto}
+              title={auto ? 'Auto-progress (switch to manual single-step)' : 'Manual single-step (switch to auto)'}
               className={cn(
                 'focus-ring tabular rounded-sm border px-1.5 py-0.5 text-2xs uppercase tracking-wider transition-colors',
                 auto

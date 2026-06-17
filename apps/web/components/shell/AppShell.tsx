@@ -22,6 +22,14 @@ import { KeyboardChords } from '../command/KeyboardChords';
 export function AppShell() {
   const { selectedLoopId, leftCollapsed, rightCollapsed, toggleLeft, toggleRight } = useCockpit();
 
+  // Keep ONE live SSE subscription open for the selected loop (reconnect-safe; resumes
+  // by seq). Switching loops tears down the prior subscription and opens the new one.
+  useEffect(() => {
+    const rt = useRealtime.getState();
+    rt.connect(selectedLoopId);
+    return () => rt.disconnect(selectedLoopId);
+  }, [selectedLoopId]);
+
   // Deep-link auto-run: `?run` (optionally `?run=<loopId>`) kicks off one real cycle
   // on load — handy for demos, deep links, and headless verification.
   useEffect(() => {

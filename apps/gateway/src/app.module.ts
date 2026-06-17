@@ -1,19 +1,18 @@
 import { Module } from '@nestjs/common';
 import { AppController } from './app.controller.js';
+import { RealtimeModule } from './realtime/realtime.module.js';
 
 /**
- * Root module — STUB.
- *
- * Phase 2+ wiring lands here as feature modules:
+ * Root module. The Phase 3 RealtimeModule (WS hub over the EventStream spine) is wired
+ * now. Remaining Phase 2+ feature modules land here:
  *  - AuthModule          (session/JWT verification, attaches caller + org)
  *  - RbacModule          (role guards: VIEWER / OPERATOR / COMMANDER)
  *  - PersistenceModule   (@departments/db pool + RLS org-context interceptor)
  *  - GraphqlModule       (code-first schema) alongside the REST controllers
- *  - RealtimeModule      (WS hub bridging Redis Streams -> clients)
  *  - CostModule          (@departments/cost budget/limit enforcement)
  */
 @Module({
-  imports: [],
+  imports: [RealtimeModule],
   controllers: [AppController],
   providers: [],
 })

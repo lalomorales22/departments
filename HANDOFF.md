@@ -2,53 +2,60 @@
 
 > The cross-cycle memory of this repo's own `loop software-builder`. **MEMORY is the only legal handoff between cycles** — the next PLAN reads this first. Keep it truthful and current.
 
-- **Cycle:** 2 (Phase 2 — The Loop Engine)
+- **Cycle:** 3 (Phase 3 — The Live Dashboard)
 - **Updated:** 2026-06-17
-- **Status:** ✅ Phase 1 (Foundations) + Phase 2 (The Loop Engine) complete. A single loop runs a **full real cycle** locally; the cockpit can trigger one live. Real CMA / Temporal / pgvector paths are authored and gated behind creds + Docker.
+- **Status:** ✅ Phase 1 (Foundations) + Phase 2 (The Loop Engine) + Phase 3 (The Live Dashboard) complete. The cockpit is now **driven by a real loop over a reconnect-safe realtime spine** — pipeline, agents, metrics, health, logs, inspector, and connection state all bind live. The **no-progress detector** and **manual single-step** are live. Real Redis/WS/Postgres paths are authored and gated behind creds + Docker.
 
 ---
 
-## Phase 2 — what shipped
+## Phase 3 — what shipped
 
-### The engine (`packages/orchestration`) — the core, fully tested
-- `runCycle()` drives **PLAN → EXECUTE ⇄ EVALUATE (bounded rework) → IMPROVE → MEMORY** over hexagonal **ports** (`ArtifactPort`, `MemoryPort`, `RubricPort`, `LedgerPort`, `PersistencePort`, `Clock`) so the cycle logic is pure and swappable.
-- `state-machine.ts` — gate routing (`routeEvaluate`: fail → rework, bounded by `maxIterations`; settle → proceed), cycle advance/wrap. `bootstrap.ts` — resumable (HANDOFF → resume next cycle; else seed). `local-driver.ts` — composition root wiring the real adapters. `cli.ts` — `tsx src/cli.ts <loop> [--cycles N] [--stream]` (NDJSON in `--stream`).
-- **Budget-cap PRECEDENCE enforced in the engine:** hard cap → PAUSE, soft cap → DOWNGRADE effort — both override escalation. Per-loop monotonic event `seq`; one `Run` per phase (audit spine).
+### The realtime spine — `packages/realtime` (new, fully tested)
+- **`EventStream` port** abstracting Redis Streams ops (append / replay-after-cursor / subscribe-tail / `lastSeq`) behind one interface, with **two adapters shipped from day one** (the proven `FakeCmaRuntime`/`CmaRuntime` + `InMemory`/`PgVector` pattern):
+  - `InMemoryEventStream` — works with **zero infra**; the cockpit's default.
+  - `RedisEventStream` — **gated on `REDIS_URL`**, authored against an INJECTED minimal `RedisLike` client (no `ioredis` import), unit-tested with a fake client. Not run here.
+- **`lastSeq()` makes the per-loop `seq` allocator PERSISTENT** — the structural fix for resume-after-restart (the old in-process Map reset to 0 every process).
+- **`ingest()` / `ResumeState`** — the pure resume-by-`seq` + dedupe-by-`id` + always-settle core (`status|metric|error` re-settle even if seen; no duplicate log lines). The single tested source of truth, shared by the browser store and the WS gateway.
+- **`topicsFor()`** — maps a `DeptEvent` to the frozen WS topics; **`ReconnectController` + `backoffDelay`** — transport-agnostic backoff + heartbeat/stale state machine. **30 unit tests.**
 
-### The runtime boundary (`packages/agent-runtime`)
-- `LoopAgentRuntime` — the engine-facing contract (startSession / executePhase / evaluate / endSession).
-- `FakeCmaRuntime` — deterministic, local, network-free; writes real files into the loop's git tree, streams the full event feed, fails the performance gate on the first grade (so IMPROVE always iterates), simulates prompt-cache warmth on cycle > 1.
-- `CmaRuntime` + `CmaSseNormalizer` + `callFableSafe` — the REAL adapter (against an injected `CmaClient`, no SDK hard-dep), the partial SSE→Event normalizer, and the Fable-5 refusal-safe path (server-side fallback → `claude-opus-4-8`, 30-day retention). `validateKnobs` enforced before provider calls. A live Fable smoke test ships **skipped unless `ANTHROPIC_API_KEY`**.
+### Engine integration — `packages/orchestration`
+- **No-progress detector** (`NoProgressDetector`, pure + tested): consumes `ArtifactSnapshot.meaningful` (already excludes the always-rewritten `HANDOFF.md`) **AND** metric movement; `H` consecutive stalls → health drop + **auto-pause + alert**, threaded across cycles in `local-driver`. Emits a live `health` metric every cycle. **Budget cap / human gates still take precedence** (checked first).
+- **Manual single-step** (`StepGate` / `ManualStepGate`): the engine `await`s a gate before every phase; `autoStepGate` (default) is a no-op. CLI `--step` reads stdin; the web `/step` route writes a newline to the engine subprocess.
+- **`StreamPersistence`** — a `PersistencePort` that tees the engine feed into an `EventStream` with the seq seeded from `lastSeq` (the engine→Redis-direct production path). CLI gained `--step` and `--stall` (demos the no-progress pause).
 
-### Infra adapters
-- `packages/artifacts` — **real git-backed** `GitArtifactStore`: per-loop ISOLATED repo at `.volumes/loops/<id>`, seed README/TASKS/HANDOFF, snapshot+tag each phase (`loopId/runId/phase`), `meaningful` diff excludes HANDOFF.md (no-progress guardrail). *(Fixed a real bug: it now checks for a local `.git` rather than `--is-inside-work-tree`, so loop commits never leak into the monorepo.)*
-- `packages/memory` — `InMemoryMemoryStore` / `FileMemoryStore` (deterministic local embedding + cosine recall) + `PgVectorMemoryStore` (gated behind `DATABASE_URL`).
-- `packages/rubrics` — the four gates as gradeable criteria + `gradeSignals` heuristic (the authoritative grader is the independent CMA Outcome).
-- `apps/orchestrator` — Temporal `loopWorkflow` (continue-as-new, `runNow`/`pause` signals) + idempotent `runCycleActivity` + worker; `main.ts` degrades gracefully without Temporal. **Authored + typechecked; not runnable here (no Docker).**
-- `scripts/` — `provision-agents.yaml` (per-role Agent templates with the exact model tiering) + `provision.ts` (validates every `(model,knob)` via `validateKnobs`, dry-run by default).
+### Web transport — `apps/web` (the LOCAL transport)
+- **Decoupled run from watch.** `POST /run` spawns the engine and pipes its NDJSON into a **process-global server-side `EventStream`** (re-stamping the AUTHORITATIVE per-loop seq so it's monotonic across runs); the run is no longer the client's event source.
+- **`GET /stream` (SSE)** — the reconnect-safe feed: replays after `?lastSeq`/`Last-Event-ID`, tails live, `id:` = seq, heartbeats. SSE is the browser transport for `next dev` (no extra server; native `Last-Event-ID` resume). `POST /step` advances a step-mode run; `GET /inspect` reads the loop's real git workspace + memory.
+- **`lib/realtime.ts`** rewritten: one multiplexed SSE subscription per loop, per-loop `lastSeq`, seen-id dedupe, exponential-backoff reconnect, heartbeat/stale, derived `activePhase`/`runStatus`. **`lib/live.ts`** — live-or-fixture hooks every organism reads through.
 
-### Frontend (minimal run-a-loop)
-- `app/api/loops/[id]/run/route.ts` — spawns the engine CLI as a subprocess and streams NDJSON (decouples Node-only engine from webpack). `lib/realtime.ts` — streaming store. `LogConsole` merges live events; `CommandBar` `run <name>` / ▶ trigger; `?run` deep-link auto-runs.
+### The cockpit, alive
+- **LoopPipeline** (live `activePhase`/stages/cycle + AUTO↔STEP toggle + STEP advance), **AgentGrid** (live role-driven statuses), **MetricGrid/Card** (live engine metrics, LIVE/MOCK badge, delta-flash), **LoopHeader** (live cycle/health/status), **HealthGauge** (live health), **StatusBar** (REAL connection state — `LIVE`/`RECONNECTING`/`STALE`, live clock; the fake `LIVE·MOCK` + frozen clock are gone), **TransportBar** (real Run/Pause→step/Step), **LogConsole** (`aria-live`, autoscroll-lock + "↓ N new" pill), **Inspector** (real ARTIFACTS rows + memory + per-run **Run Trace** in HISTORY), **Kanban** (optimistic + keyboard moves + live counts).
+
+### Normalizer + observability + gateway
+- **Full `CmaSseNormalizer`**: added `message_delta` (streaming), `custom/server_tool_use`, `*_tool_result` (result/error phases), and per-gate verdicts on `outcome_evaluation_end`. **+ a new normalizer test suite (8) and the events package's first tests (4).**
+- **Observability:** per-run **Run Trace** (phase timeline + grader + guardrail, from the event feed) in the Inspector; opt-in structured server log keyed by `org/loop/run/seq` (`DEPT_TRACE`).
+- **NestJS WS gateway** (`apps/gateway` `RealtimeModule` + `RealtimeGateway`, `WsAdapter`): subscribes the per-loop `EventStream`, multiplexes onto the frozen topics, replays-by-seq, heartbeats. The **production transport over the same spine** — typechecked + wired, run only with Redis (Docker). Added the `metric UNIQUE(loop_id, key)` migration (idempotent metric upserts; `event` already had `UNIQUE(loop_id, seq)`).
 
 ## Verification (this machine, no Docker / no CMA creds)
-- **All 12 packages/apps typecheck**; `next build` + `next lint` clean; **139 unit tests pass** (+1 skipped Fable smoke).
-- **Real end-to-end cycle proven:** `loop software-builder --cycles 2` produced an isolated git repo with per-phase commits/tags (`seed → c1:plan → c1:execute → c1:execute:rework1 → c1:improve → c1:memory → c2:…`), IMPROVE rework, MEMORY → HANDOFF (`Cycle: 2`), resume, and a **63% cost drop on the warm cycle** (cacheRead 0 → 13,916).
-- **Cockpit-triggered run works:** `POST /api/loops/:id/run` streams the real engine into the LogConsole live.
+- **13/13 packages typecheck**; **`next build` + `next lint` clean**; **195 unit tests pass (+1 skipped Fable smoke)** across 10 test tasks — `pnpm test` is fully green (fixed the orchestrator "no test files" wart with `--passWithNoTests`).
+- **End-to-end through the cockpit's HTTP layer:** a real loop streams over SSE; **resume from a mid-cursor returns only `seq > cursor` with zero duplicates**; a `--stall` run **auto-pauses** (health 80→60→40, one `paused` status, the guardrail log) over the SSE spine; **manual single-step** holds at each phase until `POST /step` (2 events → 31 after 4 steps; `409` on an idle loop); `/inspect` returns the loop's **real artifacts** (README/TASKS/STRATEGY/REPORT/HANDOFF + `src/generated/*.ts`), distilled memory, and HANDOFF.
 
 ## Known gaps / explicitly deferred
-- Temporal/Postgres/Redis/MinIO not run (no Docker). `docker compose up -d && pnpm db:migrate` is the next manual check; the Temporal workflow + pgvector memory are authored but unexercised.
-- Real CMA + Fable calls need `ANTHROPIC_API_KEY` + the `managed-agents-2026-04-01` beta; the adapter is DI-tested with a fake client.
-- Live pipeline-stage advance from streamed events, the full reconnect-safe WS spine, and the no-progress detector are **Phase 3**.
-- `.volumes/` (per-loop git repos + memory JSONL) is gitignored — runtime state, never committed.
+- **No Docker here:** `RedisEventStream`, the NestJS WS gateway, Postgres upserts, and Temporal are authored + typechecked but exercised only under `docker compose up -d`. The local cockpit uses `InMemoryEventStream` + SSE (a real, reconnect-safe transport — the WS gateway speaks the same protocol).
+- **Kanban is fixture-seeded with optimistic local moves** — there is no `task` kind in the frozen `Event` protocol, so true live task state needs a separate **tasks projection** (a patch channel, not a `DeptEvent`). Deferred — do NOT bump `EVENT_PROTOCOL_VERSION` for it.
+- **LogConsole** stayed a DOM list (got `aria-live` + autoscroll-lock + "↓ N new"); xterm.js virtualization is unneeded at current event volume — deferred polish.
+- `/inspect` reads the local git workspace directly (no org/RLS scoping); the production read path is the gateway + RLS (Phase 4/5).
+- `.volumes/` (per-loop git repos + memory JSONL + test loops like `p3*`) is gitignored — runtime state, never committed.
 
-## Next PLAN should start here (Phase 3 — The Live Dashboard)
-1. Full CMA-SSE→Event normalizer + Redis Streams + WS gateway (resume-by-`seq`, dedupe-by-`id`, backpressure, heartbeats).
-2. Realtime store → single multiplexed WS; pipeline advances from `status` events; agent grid / kanban / metrics bind live.
-3. The **no-progress detector** (H cycles, no meaningful diff/metric → health drop → auto-pause) — the `meaningful` signal already lands from `GitArtifactStore`.
-4. Per-run trace view; structured logging keyed by `org/loop/run/seq`.
+## Next PLAN should start here (Phase 4 — Hierarchy & Meta-Loop)
+1. **Child-loop spawning** behind a manual-approval gate (max depth, per-org cap, denial-loop guard) + health/metric **rollup** into parents; `LoopTree` shows real nesting.
+2. **`CeoWorkflow`**: async steer (read children's last persisted state, never block), `set_objective`, **Batch API** review (50% off, shared cached prefix), pre-warm.
+3. **Turn on the runaway guards where autonomy scales:** concurrency semaphore (Redis), cadence floors, the **org-wide hard budget cap**, and **`always_ask` on irreversible tools** — plus the **budget-vs-escalation precedence in the ledger/state machine**.
+4. Scheduling (Temporal timers + CMA Scheduled Deployments + HMAC webhook → `run_now`); ANALYTICS tab on cross-loop rollup views; ARTIFACTS tab (⌘I import).
 
 ## Watch-outs
-- Keep the engine talking ONLY to `LoopAgentRuntime` + the ports — no direct model/SDK calls in `orchestration`.
-- `GitArtifactStore` must keep checking for a LOCAL `.git` (isolation); never let loop commits touch the monorepo.
-- Temporal workflow code must stay deterministic (no `Date.now`/`Math.random`/IO in `workflows.ts`).
-- Budget caps + human gates override escalation — never let an escalation bump breach a hard cap.
+- The **frozen `Event` protocol** (`EVENT_PROTOCOL_VERSION = 1`) is binding — new signals (health, step, no-progress) reuse EXISTING kinds. Adding a `task` kind = a protocol bump; route task state through a patch channel instead.
+- **Seq ownership:** the engine's per-process seq is PROVISIONAL; the durable store (server-side in-mem / Redis) re-stamps the AUTHORITATIVE per-loop seq on append. Resume keys off the stored seq; dedupe keys off the stable `id` (survives re-stamping). Keep `lastSeq` the single seq source.
+- `@departments/realtime` uses **extensionless relative imports** (it's webpack-transpiled by Next, like `shared`/`events`) — do NOT add `.js` extensions there (they break the Next build); the tsx-run packages keep `.js`.
+- The browser SSE transport is interchangeable with the WS gateway by protocol — both honor resume-by-`seq` + dedupe + always-settle. Don't let either drift from the `@departments/realtime` core.
+- No-progress / step pauses must never override a budget-cap pause or a human gate (precedence: caps + gates win).

@@ -1,15 +1,33 @@
 'use client';
 
+import type { LoopStatus } from '@departments/shared';
 import {
   accentVar,
   isLiveLoopStatus,
   loopStatusAccent,
   loopStatusLabel,
 } from '@/lib/status-theme';
-import { getLoop, getPipelineState } from '@/lib/fixtures';
+import { getLoop } from '@/lib/fixtures';
+import { useLiveHealth, useLivePipeline, useRunStatus } from '@/lib/live';
 import { StatusBadge, TimerDisplay } from '@/components/atoms';
 import { cn } from '@/lib/cn';
 import { HealthGauge } from './HealthGauge';
+
+/** Map the live run status onto a loop status for the badge, or null when idle. */
+function liveLoopStatus(run: ReturnType<typeof useRunStatus>): LoopStatus | null {
+  switch (run) {
+    case 'running':
+      return 'running';
+    case 'paused':
+      return 'paused';
+    case 'error':
+      return 'error';
+    case 'done':
+      return 'idle';
+    default:
+      return null;
+  }
+}
 
 /** Format a USD amount compactly (e.g. $612.40, $1.2k). */
 function usd(n: number): string {
@@ -43,6 +61,10 @@ function Readout({
  */
 export function LoopHeader({ loopId }: { loopId: string }) {
   const loop = getLoop(loopId);
+  // Hooks must run unconditionally (before any early return).
+  const pipeline = useLivePipeline(loopId);
+  const { health } = useLiveHealth(loopId);
+  const runStatus = useRunStatus(loopId);
 
   if (!loop) {
     return (
@@ -55,9 +77,10 @@ export function LoopHeader({ loopId }: { loopId: string }) {
     );
   }
 
-  const pipeline = getPipelineState(loopId);
-  const running = loop.status === 'running';
-  const statusKey = loopStatusAccent[loop.status];
+  // Live run status (once a real run starts) overlays the fixture status.
+  const status = liveLoopStatus(runStatus) ?? loop.status;
+  const running = status === 'running';
+  const statusKey = loopStatusAccent[status];
 
   const budgetPct = loop.budgetCapUsd
     ? Math.min(100, (loop.spentUsd / loop.budgetCapUsd) * 100)
@@ -77,8 +100,8 @@ export function LoopHeader({ loopId }: { loopId: string }) {
           </span>
           <StatusBadge
             accent={statusKey}
-            label={loopStatusLabel[loop.status]}
-            live={isLiveLoopStatus(loop.status)}
+            label={loopStatusLabel[status]}
+            live={isLiveLoopStatus(status)}
           />
         </div>
         <h1 className="truncate text-xl font-semibold leading-tight text-text">
@@ -99,7 +122,7 @@ export function LoopHeader({ loopId }: { loopId: string }) {
 
         <Readout label="Cycle">
           <span className="text-faint">#</span>
-          {loop.cycleCount}
+          {pipeline.cycleCount}
         </Readout>
 
         <div className="h-8 w-px self-center bg-hairline" aria-hidden />
@@ -128,7 +151,7 @@ export function LoopHeader({ loopId }: { loopId: string }) {
 
         <div className="flex flex-col items-center gap-0.5">
           <span className="eyebrow">Health</span>
-          <HealthGauge value={loop.health} accent={running ? undefined : statusKey} />
+          <HealthGauge value={health} accent={running ? undefined : statusKey} />
         </div>
       </div>
     </div>

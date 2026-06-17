@@ -34,10 +34,6 @@ interface CockpitState {
   inspectorTab: InspectorTab;
   setInspectorTab: (t: InspectorTab) => void;
 
-  /** Pipeline auto-progress vs manual single-step (engine wired in Phase 3). */
-  pipelineAutoLayout: boolean;
-  toggleAutoLayout: () => void;
-
   /** Panel collapse (persisted). */
   leftCollapsed: boolean;
   rightCollapsed: boolean;
@@ -74,9 +70,6 @@ export const useCockpit = create<CockpitState>()(
       inspectorTab: 'DETAILS',
       setInspectorTab: (t) => set({ inspectorTab: t }),
 
-      pipelineAutoLayout: true,
-      toggleAutoLayout: () => set((s) => ({ pipelineAutoLayout: !s.pipelineAutoLayout })),
-
       leftCollapsed: false,
       rightCollapsed: false,
       toggleLeft: () => set((s) => ({ leftCollapsed: !s.leftCollapsed })),
@@ -95,7 +88,6 @@ export const useCockpit = create<CockpitState>()(
       partialize: (s) => ({
         leftCollapsed: s.leftCollapsed,
         rightCollapsed: s.rightCollapsed,
-        pipelineAutoLayout: s.pipelineAutoLayout,
         logTab: s.logTab,
         inspectorTab: s.inspectorTab,
       }),

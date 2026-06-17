@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useRef } from 'react';
-import { X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowDown, X } from 'lucide-react';
 import type { AccentKey } from '@departments/shared';
 import type { DeptEvent, LogLevel } from '@departments/events';
 import { getAgent, getLogs } from '@/lib/fixtures';
@@ -108,6 +108,11 @@ export function LogConsole({ loopId }: { loopId: string }) {
   const setSelectedAgent = useCockpit((s) => s.setSelectedAgent);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Autoscroll LOCK: stick to the bottom until the operator scrolls up, then surface a
+  // "↓ N new" pill instead of yanking them back down.
+  const [stuck, setStuck] = useState(true);
+  const [newCount, setNewCount] = useState(0);
+  const prevLenRef = useRef(0);
 
   // Live events from a real engine run (streamed via the realtime store) are appended
   // after the fixture backlog, so "run a loop" shows raw phase progression live.
@@ -121,11 +126,43 @@ export function LogConsole({ loopId }: { loopId: string }) {
       .filter((ev) => (selectedAgentId ? eventAgentId(ev) === selectedAgentId : true));
   }, [loopId, logTab, selectedAgentId, liveEvents]);
 
-  // Autoscroll to bottom whenever the visible stream changes (mount + tab/scope/loop swap).
-  useEffect(() => {
+  const scrollToBottom = () => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [events]);
+    setStuck(true);
+    setNewCount(0);
+  };
+
+  // When the visible stream grows: follow the bottom if stuck, else count unseen lines.
+  useEffect(() => {
+    const added = events.length - prevLenRef.current;
+    prevLenRef.current = events.length;
+    if (stuck) {
+      const el = scrollRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    } else if (added > 0) {
+      setNewCount((n) => n + added);
+    }
+  }, [events, stuck]);
+
+  // Reset scroll position + lock when the loop/tab/scope changes.
+  useEffect(() => {
+    prevLenRef.current = events.length;
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+    setStuck(true);
+    setNewCount(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loopId, logTab, selectedAgentId]);
+
+  // Track whether the operator is pinned to the bottom (within a small threshold).
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    setStuck(atBottom);
+    if (atBottom) setNewCount(0);
+  };
 
   const scopedAgent = selectedAgentId ? getAgent(selectedAgentId) : undefined;
 
@@ -198,13 +235,22 @@ export function LogConsole({ loopId }: { loopId: string }) {
       )}
 
       {/* Stream */}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-3 py-2 leading-relaxed">
-        {events.length === 0 ? (
-          <p className="py-6 text-center text-2xs text-faint">
-            no {logTab.toLowerCase()} events{scopedAgent ? ' for this agent' : ''}
-          </p>
-        ) : (
-          <ol className="space-y-0.5">
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          onScroll={onScroll}
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions text"
+          aria-label={`${logTab} stream`}
+          className="h-full overflow-y-auto px-3 py-2 leading-relaxed"
+        >
+          {events.length === 0 ? (
+            <p className="py-6 text-center text-2xs text-faint">
+              no {logTab.toLowerCase()} events{scopedAgent ? ' for this agent' : ''}
+            </p>
+          ) : (
+            <ol className="space-y-0.5">
             {events.map((ev, i) => {
               const { label, accent } = lineTag(ev);
               const last = i === events.length - 1;
@@ -230,7 +276,21 @@ export function LogConsole({ loopId }: { loopId: string }) {
                 </li>
               );
             })}
-          </ol>
+            </ol>
+          )}
+        </div>
+
+        {/* Autoscroll-lock pill: jump back to the live tail without losing your place. */}
+        {!stuck && newCount > 0 && (
+          <button
+            type="button"
+            onClick={scrollToBottom}
+            className="focus-ring absolute bottom-2 left-1/2 inline-flex -translate-x-1/2 items-center gap-1 rounded-full border border-accent-cyan/40 bg-surface-2 px-2 py-0.5 text-2xs tracking-wider text-accent-cyan shadow-glow-cyan"
+            style={{ backgroundColor: 'color-mix(in oklab, var(--accent-cyan) 12%, var(--surface-2))' }}
+          >
+            <ArrowDown className="h-3 w-3" strokeWidth={2} aria-hidden />
+            {newCount} NEW
+          </button>
         )}
       </div>
     </section>

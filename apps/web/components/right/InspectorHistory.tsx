@@ -2,6 +2,7 @@
 
 import type { Phase } from '@departments/shared';
 import { getLoop, getMemory } from '@/lib/fixtures';
+import { useRunTrace } from '@/lib/live';
 import { accentVar, phaseAccent } from '@/lib/status-theme';
 import { SectionLabel } from '@/components/atoms';
 
@@ -85,14 +86,22 @@ function buildHistory(loopId: string): HistoryEntry[] {
 }
 
 export function InspectorHistory({ loopId }: { loopId: string }) {
-  const entries = buildHistory(loopId);
+  // Live per-run trace when a real run has streamed; else the synthesized fixture timeline.
+  const trace = useRunTrace(loopId);
+  const entries = trace ?? buildHistory(loopId);
+  const live = trace !== null;
 
   return (
     <div className="animate-fade-in px-3 py-3">
       <SectionLabel
-        right={<span className="tabular text-2xs text-faint">{entries.length}</span>}
+        right={
+          <span className="tabular text-2xs text-faint">
+            {live ? 'LIVE · ' : ''}
+            {entries.length}
+          </span>
+        }
       >
-        Cycle Timeline
+        {live ? 'Run Trace' : 'Cycle Timeline'}
       </SectionLabel>
 
       {/* vertical hairline rail on the left; dots sit on it */}

@@ -1,6 +1,8 @@
 'use client';
 
+import type { DragEvent, KeyboardEvent } from 'react';
 import type { Task } from '@departments/shared';
+import { TASK_STATE_LABELS } from '@departments/shared';
 import { PriorityBadge, TagChip } from '@/components/atoms';
 import { getAgent } from '@/lib/fixtures';
 import { useCockpit } from '@/lib/store';
@@ -23,9 +25,19 @@ function initialsOf(name: string): string {
 /**
  * A single Kanban task card. Left accent border is colored by the task's state; when
  * the card's assignee is the selected agent it lifts with a rationed cyan ring + glow.
- * Presentational only — Phase 3 wires drag/drop.
+ *
+ * Phase 3 interaction: the card is focusable + keyboard-movable across lanes
+ * (ArrowLeft/ArrowRight or [ / ]) and is a native HTML5 drag source carrying its id
+ * and origin state so a lane can compute the move on drop. Moves are optimistic and
+ * local — see the reconciliation note in KanbanBoard.
  */
-export function TaskCard({ task }: { task: Task }) {
+export function TaskCard({
+  task,
+  onMove,
+}: {
+  task: Task;
+  onMove: (taskId: string, dir: -1 | 1) => void;
+}) {
   const selectedAgentId = useCockpit((s) => s.selectedAgentId);
 
   const stateColor = accentVar(taskStateAccent[task.state]);
@@ -37,11 +49,34 @@ export function TaskCard({ task }: { task: Task }) {
   const tags = task.tags ?? [];
   const shownTags = tags.slice(0, 2);
 
+  function handleKeyDown(e: KeyboardEvent<HTMLElement>) {
+    if (e.key === 'ArrowLeft' || e.key === '[') {
+      e.preventDefault();
+      onMove(task.id, -1);
+    } else if (e.key === 'ArrowRight' || e.key === ']') {
+      e.preventDefault();
+      onMove(task.id, 1);
+    }
+  }
+
+  function handleDragStart(e: DragEvent<HTMLElement>) {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', task.id);
+    // Origin state lets the drop lane compute the signed move distance.
+    e.dataTransfer.setData('application/x-task-state', task.state);
+  }
+
   return (
     <article
       data-task-id={task.id}
+      tabIndex={0}
+      role="button"
+      draggable
+      onKeyDown={handleKeyDown}
+      onDragStart={handleDragStart}
+      aria-label={`Task: ${task.title}. Lane ${TASK_STATE_LABELS[task.state]}. Press left or right arrow to move between lanes.`}
       className={cn(
-        'group relative rounded-sm border border-hairline bg-surface-2 pl-2.5 pr-2 py-2',
+        'focus-ring group relative rounded-sm border border-hairline bg-surface-2 pl-2.5 pr-2 py-2',
         'transition-colors hover:border-hairline-strong',
         isSelectedAssignee && 'ring-1',
       )}

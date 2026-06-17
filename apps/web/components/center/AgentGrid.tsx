@@ -3,7 +3,7 @@
 import type { Agent } from '@departments/shared';
 import { Users } from 'lucide-react';
 import { SectionLabel } from '@/components/atoms';
-import { getAgents } from '@/lib/fixtures';
+import { useLiveAgents } from '@/lib/live';
 import { accentVar } from '@/lib/status-theme';
 import { cn } from '@/lib/cn';
 import { AgentCard } from './AgentCard';
@@ -23,7 +23,7 @@ function sortRunningFirst(agents: Agent[]): Agent[] {
  * columns wide / 2 narrow and honors an explicit `columns` override.
  */
 export function AgentGrid({ loopId, columns }: { loopId: string; columns?: number }) {
-  const agents = sortRunningFirst(getAgents(loopId));
+  const agents = sortRunningFirst(useLiveAgents(loopId));
   const total = agents.length;
   const running = agents.filter((a) => a.status === 'running').length;
 

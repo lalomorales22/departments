@@ -1,7 +1,9 @@
 'use client';
 
+import { useEffect, useRef, useState } from 'react';
 import type { AccentKey, Metric } from '@departments/shared';
 import { DeltaChip, Sparkline } from '@/components/atoms';
+import { accentVar } from '@/lib/status-theme';
 
 /**
  * Resolve the sparkline accent the same way DeltaChip colors itself:
@@ -18,6 +20,23 @@ function deltaAccentFor(delta: number, goodDirection: Metric['goodDirection']): 
 export function MetricCard({ metric }: { metric: Metric }) {
   const deltaAccent = deltaAccentFor(metric.delta, metric.goodDirection);
 
+  // Briefly flash the value to the delta accent whenever its display changes.
+  const prevDisplay = useRef(metric.display);
+  const [flashing, setFlashing] = useState(false);
+  useEffect(() => {
+    if (prevDisplay.current === metric.display) return;
+    prevDisplay.current = metric.display;
+    if (
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    ) {
+      return;
+    }
+    setFlashing(true);
+    const t = setTimeout(() => setFlashing(false), 600);
+    return () => clearTimeout(t);
+  }, [metric.display]);
+
   return (
     <div className="group flex flex-col rounded border border-hairline bg-surface transition-colors hover:border-hairline-strong">
       <div className="flex items-start justify-between gap-2 px-3 pt-2.5">
@@ -26,7 +45,10 @@ export function MetricCard({ metric }: { metric: Metric }) {
       </div>
 
       <div className="flex items-baseline gap-1.5 px-3 pb-2 pt-1.5">
-        <span className="tabular text-2xl font-semibold leading-none text-text">
+        <span
+          className="tabular text-2xl font-semibold leading-none text-text transition-colors duration-300"
+          style={flashing ? { color: accentVar(deltaAccent) } : undefined}
+        >
           {metric.display}
         </span>
         {metric.unit != null && (

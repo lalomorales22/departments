@@ -61,11 +61,19 @@ export interface RawCmaFrame {
     readonly cache_creation_input_tokens?: number;
   };
   readonly is_error?: boolean;
+  /** tool_use / tool_result correlation id. */
+  readonly tool_use_id?: string;
   /** span.outcome_evaluation_* fields. */
   readonly outcome_id?: string;
   readonly iteration?: number;
   readonly result?: string;
   readonly explanation?: string;
+  /** span.outcome_evaluation_end per-gate verdicts (when the grader reports them). */
+  readonly gates?: ReadonlyArray<{
+    readonly category?: string;
+    readonly passed?: boolean;
+    readonly score?: number;
+  }>;
   /** session.status_idle stop reason. */
   readonly stop_reason?: { readonly type?: string };
   /** session.error. */
@@ -149,13 +157,23 @@ export class CmaSseNormalizer implements CmaEventNormalizer {
 
     switch (type) {
       case 'agent.message':
-        return this.fromMessage(f, false);
+        return this.fromMessage(f, { thinking: false, streaming: false });
+      case 'agent.message_delta':
+        // Streamed token delta — coalesced on the client (OutputPayload.streaming).
+        return this.fromMessage(f, { thinking: false, streaming: true });
       case 'agent.thinking':
-        return this.fromMessage(f, true);
+        return this.fromMessage(f, { thinking: true, streaming: false });
       case 'agent.tool_use':
-        return this.fromToolUse(f, false);
+        return this.fromToolUse(f, '', 'start');
       case 'agent.mcp_tool_use':
-        return this.fromToolUse(f, true);
+        return this.fromToolUse(f, 'mcp:', 'start');
+      case 'agent.custom_tool_use':
+      case 'agent.server_tool_use':
+        return this.fromToolUse(f, 'tool:', 'start');
+      case 'agent.tool_result':
+      case 'agent.mcp_tool_result':
+      case 'agent.custom_tool_result':
+        return this.fromToolResult(f);
       case 'span.model_request_end':
         return this.fromModelRequestEnd(f);
       case 'session.error':
@@ -164,7 +182,7 @@ export class CmaSseNormalizer implements CmaEventNormalizer {
         if (type.startsWith('session.status_')) return this.fromSessionStatus(f, type);
         if (type.startsWith('session.thread_status_')) return this.fromThreadStatus(f, type);
         if (type.startsWith('span.outcome_evaluation_')) return this.fromOutcomeEval(f, type);
-        // Exotic / not-yet-mapped frame — Phase 3 extends this set.
+        // Exotic / not-yet-mapped frame — safely dropped (callers tolerate []).
         return [];
     }
   }
@@ -198,11 +216,11 @@ export class CmaSseNormalizer implements CmaEventNormalizer {
       : this.ctx.agentId;
   }
 
-  /** agent.message → output; agent.thinking → log (DEBUG-level reasoning trace). */
-  private fromMessage(f: RawCmaFrame, thinking: boolean): DeptEvent[] {
+  /** agent.message(_delta) → output; agent.thinking → log (DEBUG-level reasoning trace). */
+  private fromMessage(f: RawCmaFrame, opts: { thinking: boolean; streaming: boolean }): DeptEvent[] {
     const text = this.textOf(f);
     if (text.length === 0) return [];
-    if (thinking) {
+    if (opts.thinking) {
       const level: LogLevel = 'debug';
       return [
         {
@@ -216,15 +234,15 @@ export class CmaSseNormalizer implements CmaEventNormalizer {
       {
         ...this.base('output', f.id),
         kind: 'output',
-        payload: { text, agentId: this.agentId(f), streaming: false },
+        payload: { text, agentId: this.agentId(f), streaming: opts.streaming },
       },
     ];
   }
 
-  /** agent.tool_use / agent.mcp_tool_use → tool_use (compact one-liner for DEBUG). */
-  private fromToolUse(f: RawCmaFrame, mcp: boolean): DeptEvent[] {
+  /** agent.{tool_use,mcp_tool_use,custom_tool_use,server_tool_use} → tool_use start. */
+  private fromToolUse(f: RawCmaFrame, prefix: string, phase: 'start' | 'result' | 'error'): DeptEvent[] {
     const tool = typeof f.name === 'string' && f.name.length > 0 ? f.name : 'tool';
-    const prefixed = mcp ? `mcp:${tool}` : tool;
+    const prefixed = `${prefix}${tool}`;
     const summary = this.summarizeInput(f.input);
     return [
       {
@@ -233,9 +251,28 @@ export class CmaSseNormalizer implements CmaEventNormalizer {
         payload: {
           agentId: this.agentId(f),
           tool: prefixed,
-          phase: 'start',
+          phase,
           summary: `${prefixed}${summary ? ` ${summary}` : ''}`,
           ...(f.input ? { input: f.input } : {}),
+        },
+      },
+    ];
+  }
+
+  /** agent.*_tool_result → tool_use with phase result/error (correlates by tool_use_id). */
+  private fromToolResult(f: RawCmaFrame): DeptEvent[] {
+    const tool = typeof f.name === 'string' && f.name.length > 0 ? f.name : (f.tool_use_id ?? 'tool');
+    const errored = f.is_error === true;
+    const detail = this.textOf(f);
+    return [
+      {
+        ...this.base('tool_use', f.id),
+        kind: 'tool_use',
+        payload: {
+          agentId: this.agentId(f),
+          tool,
+          phase: errored ? 'error' : 'result',
+          summary: `${tool} → ${errored ? 'error' : 'ok'}${detail ? `: ${truncate(detail, 60)}` : ''}`,
         },
       },
     ];
@@ -380,6 +417,22 @@ export class CmaSseNormalizer implements CmaEventNormalizer {
           message: `grader · iteration ${numberOr(f.iteration, 0)} · ${result}${explanation}`,
         },
       });
+      // Per-gate verdicts (when the grader reports them) → DEBUG lines for the trace.
+      if (Array.isArray(f.gates)) {
+        for (const g of f.gates) {
+          const cat = typeof g.category === 'string' ? g.category : 'gate';
+          const passed = g.passed === true;
+          events.push({
+            ...this.base('debug', f.id ? `${f.id}:gate:${cat}` : undefined),
+            kind: 'debug',
+            payload: {
+              agentId: 'agt-reviewer',
+              message: `gate ${cat}: ${passed ? 'PASS' : 'FAIL'}${typeof g.score === 'number' ? ` (${g.score})` : ''}`,
+              ...(typeof g.score === 'number' ? { detail: { score: g.score, passed } } : { detail: { passed } }),
+            },
+          });
+        }
+      }
     }
     // `_ongoing` is a heartbeat — the status event above is sufficient.
     return events;
@@ -403,4 +456,8 @@ export class CmaSseNormalizer implements CmaEventNormalizer {
 
 function numberOr(v: number | undefined, fallback: number): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max)}…` : s;
 }
