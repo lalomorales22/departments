@@ -1,8 +1,11 @@
 packages:
   - "apps/*"
   - "packages/*"
+  - "scripts"
 allowBuilds:
   '@nestjs/core': false
+  '@swc/core': false
   esbuild: true
+  protobufjs: false
   sharp: true
   unrs-resolver: true

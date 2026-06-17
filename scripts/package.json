@@ -1,0 +1,27 @@
+{
+  "name": "@departments/scripts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "One-time CMA agent/environment provisioning (version-controlled `ant` YAML), applied via tsx — never per tick.",
+  "main": "./provision.ts",
+  "types": "./provision.ts",
+  "exports": {
+    ".": "./provision.ts"
+  },
+  "scripts": {
+    "provision": "tsx provision.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@departments/agent-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

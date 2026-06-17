@@ -8,3 +8,9 @@
  */
 export * from './runtime.js';
 export * from './models.js';
+export * from './loop-runtime.js';
+export * from './fake.js';
+// Phase 2: the real CMA adapter + SSE normalizer + Fable refusal-safe path.
+export * from './normalizer.js';
+export * from './cma.js';
+export * from './fable.js';

@@ -2,67 +2,53 @@
 
 > The cross-cycle memory of this repo's own `loop software-builder`. **MEMORY is the only legal handoff between cycles** — the next PLAN reads this first. Keep it truthful and current.
 
-- **Cycle:** 1 (Phase 1 — Foundations)
+- **Cycle:** 2 (Phase 2 — The Loop Engine)
 - **Updated:** 2026-06-17
-- **Status:** ✅ Phase 1 substantially complete and **runnable**. The fixture-bound mission-control cockpit boots at `localhost:3000`; all contracts are frozen; CI gates are green locally.
+- **Status:** ✅ Phase 1 (Foundations) + Phase 2 (The Loop Engine) complete. A single loop runs a **full real cycle** locally; the cockpit can trigger one live. Real CMA / Temporal / pgvector paths are authored and gated behind creds + Docker.
 
 ---
 
-## What shipped this cycle
+## Phase 2 — what shipped
 
-### Monorepo & toolchain
-- Turborepo + pnpm workspaces (`apps/*`, `packages/*`), `tsconfig.base.json`, `turbo.json`, Prettier, `.gitignore`, `.npmrc`.
-- **Resolution decision:** the whole monorepo uses `moduleResolution: "Bundler"` + **extensionless** relative imports. This is the one setting that satisfies Next/webpack (via `transpilePackages`), tsc, and esbuild/tsx simultaneously. Do **not** reintroduce `.js` extensions or `NodeNext` in app tsconfigs — it breaks the webpack consumption of `@departments/shared`.
-- `pnpm-workspace.yaml > allowBuilds` approves `esbuild`/`sharp`/`unrs-resolver` (needed) and declines `@nestjs/core`'s funding postinstall.
+### The engine (`packages/orchestration`) — the core, fully tested
+- `runCycle()` drives **PLAN → EXECUTE ⇄ EVALUATE (bounded rework) → IMPROVE → MEMORY** over hexagonal **ports** (`ArtifactPort`, `MemoryPort`, `RubricPort`, `LedgerPort`, `PersistencePort`, `Clock`) so the cycle logic is pure and swappable.
+- `state-machine.ts` — gate routing (`routeEvaluate`: fail → rework, bounded by `maxIterations`; settle → proceed), cycle advance/wrap. `bootstrap.ts` — resumable (HANDOFF → resume next cycle; else seed). `local-driver.ts` — composition root wiring the real adapters. `cli.ts` — `tsx src/cli.ts <loop> [--cycles N] [--stream]` (NDJSON in `--stream`).
+- **Budget-cap PRECEDENCE enforced in the engine:** hard cap → PAUSE, soft cap → DOWNGRADE effort — both override escalation. Per-loop monotonic event `seq`; one `Run` per phase (audit spine).
 
-### Design system (`apps/web`)
-- `app/globals.css` is the **single source of hex** (`:root` tokens: surfaces, hairlines, text ramp, the 6 rationed accents, glows, radii). `tailwind.config.ts` maps semantic names (`bg-surface`, `border-hairline`, `text-accent-*`, `shadow-glow-*`) and **safelists** dynamic accent utilities.
-- `lib/status-theme.ts` is the **single status→accent map** (resolves to `var(--accent-*)`, never hex). Glow is reserved for live/selected/focused.
-- Geist + Geist Mono self-hosted via the `geist` package; `--font-sans`/`--font-mono` wired; `.tabular` for all machine values.
-- Atoms: `StatusDot, StatusBadge, Kbd, TagChip, PriorityBadge, DeltaChip (goodDirection), SectionLabel, TimerDisplay, Sparkline`.
+### The runtime boundary (`packages/agent-runtime`)
+- `LoopAgentRuntime` — the engine-facing contract (startSession / executePhase / evaluate / endSession).
+- `FakeCmaRuntime` — deterministic, local, network-free; writes real files into the loop's git tree, streams the full event feed, fails the performance gate on the first grade (so IMPROVE always iterates), simulates prompt-cache warmth on cycle > 1.
+- `CmaRuntime` + `CmaSseNormalizer` + `callFableSafe` — the REAL adapter (against an injected `CmaClient`, no SDK hard-dep), the partial SSE→Event normalizer, and the Fable-5 refusal-safe path (server-side fallback → `claude-opus-4-8`, 30-day retention). `validateKnobs` enforced before provider calls. A live Fable smoke test ships **skipped unless `ANTHROPIC_API_KEY`**.
 
-### The cockpit (3-column shell, matches `UI.png`)
-- **Shell:** `AppShell` (collapsible left/right, persisted), `AppBar` (wordmark, `TabNav`, command search, `TransportBar`), `StatusBar` (chord rail + live indicator).
-- **Left:** `CommandBar` (`> loop <name>`), recursive `LoopTree`/`LoopTreeNode` (CEO/Business/Execution/Worker nesting, live dots), `QuickActionList`, `CommanderProfile`.
-- **Center:** `LoopHeader` (+`HealthGauge`, elapsed `TimerDisplay`, budget bar), `LoopPipeline` (PLAN→EXECUTE→EVALUATE→**OPTIMIZE**→MEMORY, cycle counter, AUTO/STEP toggle), `AgentGrid`/`AgentCard`, `KanbanBoard` (5/4/2/4), `MetricGrid`/`MetricCard` (6 metrics, sparklines, delta-by-`goodDirection`), `LogConsole` (LOGS/DEBUG/OUTPUT, agent-scoped), `ActivityMap` (dotted-continent world view).
-- **Right:** `InspectorPanel` (DETAILS / CONFIG / HISTORY) — mission, success metrics, gates, artifacts, searchable context/memory, model-tier table, cycle timeline.
-- **Command/keyboard:** `CommandPalette` (cmdk: run-loop / navigate / actions), `ShortcutSheet`, `KeyboardChords` (⌘K/⌘P/⌘D/⌘F/⌘E/⌘M/?/1–6/[ ]).
-- **Fixtures** (`lib/fixtures/*`) mirror the spec exactly: marketing loop + 16-loop tree, 8 agents (5 running / 3 idle), 15 tasks (5/4/2/4), 6 metrics (Bounce Rate + CAC = `down`), 5 artifacts, 5 memory items, a mixed-kind event stream, geo activity nodes — all current-era (2026) dates. The `get*` selector API mirrors what the gateway will expose, so fixtures → live data is a thin swap.
+### Infra adapters
+- `packages/artifacts` — **real git-backed** `GitArtifactStore`: per-loop ISOLATED repo at `.volumes/loops/<id>`, seed README/TASKS/HANDOFF, snapshot+tag each phase (`loopId/runId/phase`), `meaningful` diff excludes HANDOFF.md (no-progress guardrail). *(Fixed a real bug: it now checks for a local `.git` rather than `--is-inside-work-tree`, so loop commits never leak into the monorepo.)*
+- `packages/memory` — `InMemoryMemoryStore` / `FileMemoryStore` (deterministic local embedding + cosine recall) + `PgVectorMemoryStore` (gated behind `DATABASE_URL`).
+- `packages/rubrics` — the four gates as gradeable criteria + `gradeSignals` heuristic (the authoritative grader is the independent CMA Outcome).
+- `apps/orchestrator` — Temporal `loopWorkflow` (continue-as-new, `runNow`/`pause` signals) + idempotent `runCycleActivity` + worker; `main.ts` degrades gracefully without Temporal. **Authored + typechecked; not runnable here (no Docker).**
+- `scripts/` — `provision-agents.yaml` (per-role Agent templates with the exact model tiering) + `provision.ts` (validates every `(model,knob)` via `validateKnobs`, dry-run by default).
 
-### Contract packages
-- `@departments/shared` — enums, entity types, and the **canonical `PIPELINE`** (engine `improve` ⇄ UI `OPTIMIZE`, accent keys only).
-- `@departments/events` — the **frozen Event protocol** (discriminated union over 8 kinds, monotonic `seq` per loop, stable `id`, `(loop_id, seq)` resume cursor, WS topic helpers, normalizer interface defined-not-implemented).
-- `@departments/agent-runtime` — the 4-method runtime interface (CMA-vs-self-hosted behind it) + the **model-tier policy table** + `validateKnobs()` + escalation stub. `models.test.ts` is the **(model,knob) CI gate** (55 tests).
-- `@departments/cost` — `BudgetLedger` (per-loop + per-org, soft→downgrade / hard→pause), caching helpers, `count_tokens` signature. `ledger.test.ts` (11 tests).
-- `@departments/db` — Postgres schema (`0001_init`), pgvector (`0002`), **RLS** deny-cross-org on every tenant table (`0003`), 2026 seed (`0100`), and an RLS policy-test spec.
+### Frontend (minimal run-a-loop)
+- `app/api/loops/[id]/run/route.ts` — spawns the engine CLI as a subprocess and streams NDJSON (decouples Node-only engine from webpack). `lib/realtime.ts` — streaming store. `LogConsole` merges live events; `CommandBar` `run <name>` / ▶ trigger; `?run` deep-link auto-runs.
 
-### Backend stubs & infra
-- `apps/gateway` (NestJS bootstrap + `/health`), `apps/orchestrator` (Temporal-host stub), `docker-compose.yml` (Postgres+pgvector / Redis / Temporal / MinIO), `.github/workflows/ci.yml` (typecheck/lint/test/build + the two policy gates), `infra/k8s/*` skeletons, `.env.example`.
-
----
-
-## Verification (this machine, no Docker)
-- `tsc --noEmit` clean across shared, events, web, agent-runtime, cost, gateway, orchestrator.
-- `next build` ✅ (route `/` ~151 kB First Load JS); `next lint` ✅ no warnings/errors.
-- Vitest: **66 passing** (55 model-policy + 11 ledger).
-- Server boots; SSR renders the full cockpit; screenshots match `UI.png`.
+## Verification (this machine, no Docker / no CMA creds)
+- **All 12 packages/apps typecheck**; `next build` + `next lint` clean; **139 unit tests pass** (+1 skipped Fable smoke).
+- **Real end-to-end cycle proven:** `loop software-builder --cycles 2` produced an isolated git repo with per-phase commits/tags (`seed → c1:plan → c1:execute → c1:execute:rework1 → c1:improve → c1:memory → c2:…`), IMPROVE rework, MEMORY → HANDOFF (`Cycle: 2`), resume, and a **63% cost drop on the warm cycle** (cacheRead 0 → 13,916).
+- **Cockpit-triggered run works:** `POST /api/loops/:id/run` streams the real engine into the LogConsole live.
 
 ## Known gaps / explicitly deferred
-- **Docker stack not exercised here** (Docker was installing). `docker compose up -d` + `pnpm db:migrate` is the next manual check.
-- Gateway/orchestrator are **compile-only stubs** — no auth/RBAC/GraphQL/WS or Temporal worker yet (Phase 2/3).
-- Realtime is mock/SSR only; the CMA-SSE→normalizer→Redis→WS spine is **Phase 3**.
-- RLS policy test is documented but needs a Postgres service to actually run (wired in `ci.yml`).
-- `next lint` warns it's deprecated (fine for now; migrate to ESLint CLI before Next 16).
+- Temporal/Postgres/Redis/MinIO not run (no Docker). `docker compose up -d && pnpm db:migrate` is the next manual check; the Temporal workflow + pgvector memory are authored but unexercised.
+- Real CMA + Fable calls need `ANTHROPIC_API_KEY` + the `managed-agents-2026-04-01` beta; the adapter is DI-tested with a fake client.
+- Live pipeline-stage advance from streamed events, the full reconnect-safe WS spine, and the no-progress detector are **Phase 3**.
+- `.volumes/` (per-loop git repos + memory JSONL) is gitignored — runtime state, never committed.
 
-## Next PLAN should start here (Phase 2 — The Loop Engine)
-1. `LoopWorkflow(loopId)` durable workflow (continue-as-new), state machine + gate routing, idempotent activities.
-2. `agent-runtime/cma` — implement the 4 methods against `client.beta.{agents,sessions}` (`managed-agents-2026-04-01`); wire the model knobs exactly (adaptive on Opus/Sonnet; omit effort+adaptive on Haiku; no sampling on Opus/Fable) and ship the **Fable-5 refusal-safe path + smoke test**.
-3. `packages/rubrics` + EVALUATE→`user.define_outcome`; the independent Opus grader (no self-grading).
-4. `packages/artifacts` (per-loop Git repo, CMA mount), MEMORY → memory store + pgvector.
-5. Cost: `cache_control` on the stable prefix + **CI assert `cache_read_input_tokens > 0`**; ledger enforcement live.
-6. Frontend: a real `run_now` trigger from the command bar via the partial normalizer.
+## Next PLAN should start here (Phase 3 — The Live Dashboard)
+1. Full CMA-SSE→Event normalizer + Redis Streams + WS gateway (resume-by-`seq`, dedupe-by-`id`, backpressure, heartbeats).
+2. Realtime store → single multiplexed WS; pipeline advances from `status` events; agent grid / kanban / metrics bind live.
+3. The **no-progress detector** (H cycles, no meaningful diff/metric → health drop → auto-pause) — the `meaningful` signal already lands from `GitArtifactStore`.
+4. Per-run trace view; structured logging keyed by `org/loop/run/seq`.
 
-## Watch-outs for future cycles
-- Keep `improve` (engine) ⇄ `OPTIMIZE` (UI) bound only through `@departments/shared` `PIPELINE`.
-- No inlined hex; no glow on idle; machine values stay mono+tabular. (Design QA enforced this cycle.)
-- Don't pin `(model, knob)` pairs the policy forbids — the CI gate will reject them.
+## Watch-outs
+- Keep the engine talking ONLY to `LoopAgentRuntime` + the ports — no direct model/SDK calls in `orchestration`.
+- `GitArtifactStore` must keep checking for a LOCAL `.git` (isolation); never let loop commits touch the monorepo.
+- Temporal workflow code must stay deterministic (no `Date.now`/`Math.random`/IO in `workflows.ts`).
+- Budget caps + human gates override escalation — never let an escalation bump breach a hard cap.

@@ -6,6 +6,7 @@ import type { AccentKey } from '@departments/shared';
 import type { DeptEvent, LogLevel } from '@departments/events';
 import { getAgent, getLogs } from '@/lib/fixtures';
 import { useCockpit, type LogTab } from '@/lib/store';
+import { useRealtime } from '@/lib/realtime';
 import { accentVar } from '@/lib/status-theme';
 import { cn } from '@/lib/cn';
 import { SectionLabel } from '@/components/atoms';
@@ -108,12 +109,17 @@ export function LogConsole({ loopId }: { loopId: string }) {
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Live events from a real engine run (streamed via the realtime store) are appended
+  // after the fixture backlog, so "run a loop" shows raw phase progression live.
+  const liveEvents = useRealtime((s) => s.liveEvents[loopId]);
+  const runStatus = useRealtime((s) => s.runStatus[loopId]);
+
   const events = useMemo(() => {
     const kinds = TAB_KINDS[logTab];
-    return getLogs(loopId)
+    return [...getLogs(loopId), ...(liveEvents ?? [])]
       .filter((ev) => kinds.includes(ev.kind))
       .filter((ev) => (selectedAgentId ? eventAgentId(ev) === selectedAgentId : true));
-  }, [loopId, logTab, selectedAgentId]);
+  }, [loopId, logTab, selectedAgentId, liveEvents]);
 
   // Autoscroll to bottom whenever the visible stream changes (mount + tab/scope/loop swap).
   useEffect(() => {
@@ -127,7 +133,22 @@ export function LogConsole({ loopId }: { loopId: string }) {
     <section className="panel-inset flex min-h-0 flex-col font-mono text-xs">
       {/* Header: label + tab switches */}
       <header className="flex items-center justify-between gap-3 border-b border-hairline px-3 py-2">
-        <SectionLabel>TERMINAL / LOGS</SectionLabel>
+        <div className="flex items-center gap-2">
+          <SectionLabel>TERMINAL / LOGS</SectionLabel>
+          {runStatus === 'running' && (
+            <span
+              className="inline-flex items-center gap-1 text-2xs tracking-wider"
+              style={{ color: accentVar('green') }}
+            >
+              <span
+                className="inline-block h-1.5 w-1.5 animate-pulse-dot rounded-full"
+                style={{ backgroundColor: accentVar('green') }}
+                aria-hidden
+              />
+              RUNNING
+            </span>
+          )}
+        </div>
         <nav className="flex items-center gap-3" aria-label="Console stream">
           {LOG_TABS.map((tab) => {
             const active = tab === logTab;

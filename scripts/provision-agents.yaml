@@ -1,0 +1,210 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DEPARTMENTS — one-time CMA agent provisioning (the `ant`-style control plane).
+#
+# ⚠️  AGENTS ARE CREATED ONCE AND REFERENCED BY ID — NEVER REBUILT PER TICK.
+#     A CMA Agent is a persisted, *versioned* object ({model, system, tools, skills,
+#     mcp_servers, multiagent}). The orchestration engine starts a Session per loop
+#     run and points it at a pre-provisioned agent by ID + version; the request path
+#     NEVER calls agents.create. Calling create per tick accumulates orphaned agents,
+#     pays create latency for nothing, defeats versioning, and blows the prompt cache.
+#     This file is the version-controlled source of truth, applied via
+#     `pnpm tsx scripts/provision.ts` (control plane = ant/CLI; data plane = SDK).
+#
+# This is one Agent template PER ROLE for a single loop department (the canonical
+# roster from README "Inside a loop"). Model tiering + knob rules mirror the
+# "Authoritative model facts" table in README.md / TASKS.md VERBATIM — do NOT
+# "correct" them from memory; every wrong (model, knob) pairing is a guaranteed 400,
+# and `provision.ts` validates each one with validateKnobs() before any apply.
+#
+# KNOB RULES (each violation is a 400 — enforced at provision time):
+#   • `xhigh` is Opus-4.7+/Fable-only. NOT on Sonnet 4.6 (caps at `max`, no xhigh rung);
+#     NOT on Haiku.
+#   • The `effort` param ERRORS on Haiku 4.5 (and Sonnet 4.5) — OMIT it entirely.
+#   • Adaptive thinking is Opus 4.6+/Sonnet 4.6/Fable-only — NOT Haiku.
+#   • Opus 4.8 & Fable 5: NO budget_tokens, NO temperature/top_p/top_k. Control depth
+#     with output_config.effort ONLY.
+#   • Fable 5: NEVER thinking:{type:"disabled"} (400) — OMIT the thinking param
+#     (always-on thinking). Requires server-side fallbacks + 30-day data retention.
+#
+# `effort`/`thinking` here are PROVISION-TIME POLICY for this template (the depth the
+# engine pins by default per role). At session/request time the engine renders them as
+# output_config.effort and the thinking block; the YAML carries the policy so the
+# (model, knob) pairing is version-controlled and CI-checkable.
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: 1
+
+# The loop department this roster provisions. One set of role agents is created per
+# department template; child loops reference the same templates by ID.
+department: software-builder
+
+# ── Shared environment (one per trust boundary; reused across the roster) ──────────
+# Tool execution sandbox. `unrestricted` egress for the default builder loop; flip to
+# `limited` (deny-by-default + allowed_hosts/allow_mcp_servers) for sensitive loops.
+environment:
+  name: departments-software-builder
+  config:
+    type: cloud
+    networking:
+      type: unrestricted
+
+# ── Agents — one template PER ROLE (canonical roster). ─────────────────────────────
+# Each entry maps 1:1 to a CMA `POST /v1/agents` body: name, model, effort/thinking
+# POLICY, system, tools/skills/mcp_servers placeholders, and (planner/coordinator)
+# the multiagent coordinator roster. `tools`/`skills`/`mcp_servers` are PLACEHOLDERS
+# for Phase 2 — wired with the real toolset/MCP creds (via vaults) downstream.
+agents:
+
+  # ── PLANNER — judgment tier (Opus 4.8, effort high) ──────────────────────────────
+  # Knob rule: Opus 4.8 → adaptive thinking ON; effort default `high` (`xhigh` for hard
+  # agentic work); no budget_tokens/sampling. Planner breaks down work + refreshes
+  # TASKS.md and is the COORDINATOR of the roster (one delegation hop → executor/qa/
+  # docs/reviewer); subagent fan-out happens inside the executor thread.
+  - role: planner
+    name: departments-planner
+    model: claude-opus-4-8
+    effort: high            # judgment tier default; bump to xhigh for hard agentic ticks
+    thinking: adaptive      # Opus 4.6+/Sonnet/Fable only — never on Haiku
+    system_ref: prompts/planner.md   # frozen, cache-shaped prologue (placeholder)
+    tools:
+      - type: agent_toolset_20260401   # bash/read/write/edit/glob/grep/web_* (placeholder set)
+    skills: []                          # e.g. {type: anthropic, skill_id: docx} (placeholder)
+    mcp_servers: []                     # {type: url, name, url}; auth via session vault (placeholder)
+    # multiagent is a TOP-LEVEL agent field (NOT a tools[] entry). The planner is the
+    # coordinator; one hop to the four role agents — see README "the five-agent
+    # coordinator + subagent fan-out".
+    multiagent:
+      type: coordinator
+      agents:
+        - role_ref: executor
+        - role_ref: qa
+        - role_ref: docs
+        - role_ref: reviewer
+
+  # ── EXECUTOR — executor tier (Sonnet 4.6, effort medium, ceiling max) ─────────────
+  # Knob rule: Sonnet 4.6 → adaptive thinking ON; effort `medium`→`high`, CEILING `max`.
+  # NEVER `xhigh` (Sonnet has no xhigh rung — 400). Volume execution: code/content/
+  # drafts; fans out to subagent threads for read-many/run-many work.
+  - role: executor
+    name: departments-executor
+    model: claude-sonnet-4-6
+    effort: medium          # executor default; may climb to high; ceiling is `max` (NOT xhigh)
+    thinking: adaptive
+    system_ref: prompts/executor.md
+    tools:
+      - type: agent_toolset_20260401
+    skills: []
+    mcp_servers: []
+
+  # ── QA / TESTER — executor tier (Sonnet 4.6, effort medium) ───────────────────────
+  # Knob rule: same as executor. QA tests/reviews quality of produced artifacts; it is
+  # NOT the independent grader (that is `reviewer`, on Opus, in its own Outcome context —
+  # no self-grading).
+  - role: qa
+    name: departments-qa
+    model: claude-sonnet-4-6
+    effort: medium
+    thinking: adaptive
+    system_ref: prompts/qa.md
+    tools:
+      - type: agent_toolset_20260401
+    skills: []
+    mcp_servers: []
+
+  # ── DOCS / WRITER — executor tier (Sonnet 4.6, effort medium) ─────────────────────
+  # Knob rule: same as executor. Maintains README/TASKS/HANDOFF and other docs.
+  - role: docs
+    name: departments-docs
+    model: claude-sonnet-4-6
+    effort: medium
+    thinking: adaptive
+    system_ref: prompts/docs.md
+    tools:
+      - type: agent_toolset_20260401
+    skills: []
+    mcp_servers: []
+
+  # ── REVIEWER — judgment tier (Opus 4.8, effort high) — THE INDEPENDENT GRADER ─────
+  # Knob rule: Opus 4.8 → adaptive ON; effort `high` (xhigh for hard cases); no
+  # budget_tokens/sampling. Runs EVALUATE in its OWN CMA Outcome context (independent
+  # window) scoring the four gates — quality/data_validation/alignment_risk/performance.
+  # No self-grading: the executor can never pass its own Alignment/Risk gate.
+  - role: reviewer
+    name: departments-reviewer
+    model: claude-opus-4-8
+    effort: high
+    thinking: adaptive
+    system_ref: prompts/reviewer.md
+    tools:
+      - type: agent_toolset_20260401   # grader inspects artifacts/diffs, not claims
+    skills: []
+    mcp_servers: []
+
+  # ── COORDINATOR (CEO) — judgment tier (Opus 4.8, effort high; xhigh for hard) ─────
+  # Knob rule: Opus 4.8 → adaptive ON; effort `high` default, `xhigh` for hard agentic
+  # coordination; no budget_tokens/sampling. The CEO/meta role: its EXECUTE is
+  # coordination, not production. Its multiagent roster is the L1 department agents (one
+  # hop each, chained). Here it delegates to the loop's own roster as a placeholder; the
+  # CEO tree wiring lands in Phase 4.
+  - role: coordinator
+    name: departments-coordinator
+    model: claude-opus-4-8
+    effort: high            # default; xhigh for hard agentic coordination turns
+    thinking: adaptive
+    system_ref: prompts/coordinator.md
+    tools:
+      - type: agent_toolset_20260401
+    skills: []
+    mcp_servers: []
+    multiagent:
+      type: coordinator
+      agents:
+        - role_ref: planner
+
+  # ── STRATEGY — strategy tier (Claude Fable 5, effort xhigh) — OPTIONAL, GATED ──────
+  # Hardest CEO / greenfield strategy only. Gate behind explicit cost approval
+  # (quarterly strategy / greenfield) — `enabled: false` keeps it OUT of the default
+  # apply set. Knob rules (all 400s otherwise):
+  #   • OMIT the thinking param — Fable is ALWAYS-ON thinking; thinking:{type:"disabled"}
+  #     is a 400. (Note: there is intentionally NO `thinking:` key on this agent.)
+  #   • effort `xhigh` (or `max`) — supported on Fable; no budget_tokens/sampling.
+  #   • Requires server-side fallbacks so a stop_reason:"refusal" doesn't kill a tick:
+  #     betas:["server-side-fallback-2026-06-01"] → fallback claude-opus-4-8.
+  #   • Requires 30-day data retention (NOT available under ZDR — every request 400s).
+  - role: strategy
+    name: departments-strategy
+    model: claude-fable-5
+    enabled: false          # gated: opt in only for the hardest strategy/greenfield ticks
+    effort: xhigh           # Fable supports xhigh/max; no xhigh on Sonnet, none on Haiku
+    # NOTE: NO `thinking:` key here on purpose — Fable thinking is always-on; the param
+    # must be OMITTED (sending disabled → 400). validateKnobs treats a present effort with
+    # no disabled-thinking flag as legal for Fable.
+    betas:
+      - server-side-fallback-2026-06-01   # exact header — earliest of the series; do NOT bump
+    fallbacks:
+      - model: claude-opus-4-8            # refusal-safe: transparently re-served in-call
+    data_retention_days: 30               # hard requirement for Fable 5
+    system_ref: prompts/strategy.md
+    tools:
+      - type: agent_toolset_20260401
+    skills: []
+    mcp_servers: []
+
+  # ── WORKER (example) — worker tier (Claude Haiku 4.5) — L4 mechanical work ─────────
+  # Knob rules (each a 400 otherwise):
+  #   • OMIT effort entirely — the effort param ERRORS on Haiku 4.5.
+  #   • NO adaptive thinking — Haiku is not adaptive (do NOT send thinking:{adaptive}).
+  #   • 200K context (the tiering outlier vs 1M elsewhere) — keep per-tick context lean.
+  # Lint/format/classify/simple-test, often Batch-API'd for high-volume fan-out.
+  # NOTE: this agent intentionally has NO `effort` and NO `thinking` key.
+  - role: worker
+    name: departments-worker
+    model: claude-haiku-4-5
+    context_tokens: 200000  # documented tiering constraint (200K, not 1M)
+    # NO `effort:` key — omitted (Haiku 400s on effort).
+    # NO `thinking:` key — omitted (Haiku has no adaptive thinking).
+    system_ref: prompts/worker.md
+    tools:
+      - type: agent_toolset_20260401
+    skills: []
+    mcp_servers: []

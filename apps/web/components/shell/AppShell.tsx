@@ -1,7 +1,9 @@
 'use client';
 
+import { useEffect } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useCockpit } from '@/lib/store';
+import { useRealtime } from '@/lib/realtime';
 import { cn } from '@/lib/cn';
 import { AppBar } from './AppBar';
 import { StatusBar } from './StatusBar';
@@ -19,6 +21,16 @@ import { KeyboardChords } from '../command/KeyboardChords';
  */
 export function AppShell() {
   const { selectedLoopId, leftCollapsed, rightCollapsed, toggleLeft, toggleRight } = useCockpit();
+
+  // Deep-link auto-run: `?run` (optionally `?run=<loopId>`) kicks off one real cycle
+  // on load — handy for demos, deep links, and headless verification.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('run')) return;
+    const target = params.get('run') || useCockpit.getState().selectedLoopId;
+    useCockpit.getState().setSelectedLoop(target);
+    void useRealtime.getState().runLoop(target);
+  }, []);
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-bg text-text">

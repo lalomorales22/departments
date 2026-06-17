@@ -1,42 +1,45 @@
 /**
- * @departments/orchestrator — Phase 1 STUB (empty workflow host).
+ * @departments/orchestrator — the Temporal worker host entrypoint.
  *
- * In Phase 2 this becomes a Temporal worker host: it registers workflows +
- * activities, connects to the Temporal cluster (see TEMPORAL_ADDRESS, served by
- * the `temporal` service in docker-compose.yml), and runs the per-loop engine.
+ * Phase 2: this boots a Temporal {@link runWorker | Worker} that runs the durable
+ * `loopWorkflow` (one instance per Loop) and its `runCycleActivity` (which ticks the
+ * `@departments/orchestration` engine — PLAN→EXECUTE→EVALUATE→IMPROVE→MEMORY — one
+ * cycle per call). The worker connects to `TEMPORAL_ADDRESS` (the `temporal` service in
+ * docker-compose.yml, default `127.0.0.1:7233`).
  *
- * The `@temporalio/*` packages (worker, workflow, client, activity) are
- * intentionally NOT dependencies yet — they are added in Phase 2. For now this
- * file only logs and exits so the monorepo typechecks and the topology is real.
+ * Degrades cleanly WITHOUT Docker: if the Temporal frontend is unreachable we log a
+ * clear hint and exit 0 (idle), so `pnpm dev` doesn't crash the monorepo when the dev
+ * stack isn't up. A reachable-but-failing worker still surfaces as a non-zero exit.
  */
-import type { Id } from '@departments/shared';
+import { runWorker, temporalAddress } from './worker';
 
-/**
- * Placeholder signature for the per-loop workflow. NOT wired to Temporal yet.
- *
- * Phase 2: decorate/register as a Temporal Workflow. It drives the loop through
- * the frozen PIPELINE phases, emits `DeptEvent`s onto the loop's Redis Stream,
- * and reacts to control signals (see `runNow`).
- *
- * @param loopId the loop this workflow instance orchestrates.
- */
-export async function LoopWorkflow(loopId: Id<'Loop'>): Promise<void> {
-  // TODO(Phase 2): register as a Temporal Workflow and run the loop engine.
-  void loopId;
+/** Connection-shaped failures we treat as "Temporal not running" (clean idle exit). */
+function isConnectionFailure(err: unknown): boolean {
+  const msg = err instanceof Error ? `${err.message}` : String(err);
+  return (
+    /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|UNAVAILABLE|Connection refused|deadline|failed to connect|Failed to connect|getaddrinfo|14 UNAVAILABLE/i.test(
+      msg,
+    ) || (err as { code?: string } | null)?.code === 'ECONNREFUSED'
+  );
 }
 
-/**
- * Placeholder for the `run_now` control signal. NOT wired to Temporal yet.
- *
- * Phase 2: expose as a Temporal Signal handler on `LoopWorkflow` so an operator
- * can force an immediate cycle (gated by RBAC at the gateway). Kept un-wired and
- * unexported-as-a-signal here; only the shape is committed.
- */
-// export const runNow = defineSignal<[reason?: string]>('run_now'); // Phase 2
-
-function bootstrap(): void {
-  // eslint-disable-next-line no-console
-  console.log('[orchestrator] stub (Temporal worker host arrives in Phase 2)');
+async function main(): Promise<void> {
+  try {
+    await runWorker();
+  } catch (err) {
+    if (isConnectionFailure(err)) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[orchestrator] Temporal not reachable at ${temporalAddress()} ` +
+          `(start the dev stack: docker compose up -d) — orchestrator idle.`,
+      );
+      process.exit(0);
+    }
+    // A real fault (bad workflow bundle, activity registration error, etc.) — fail loud.
+    // eslint-disable-next-line no-console
+    console.error('[orchestrator] worker crashed:', err);
+    process.exit(1);
+  }
 }
 
-bootstrap();
+void main();
