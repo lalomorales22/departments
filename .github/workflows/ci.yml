@@ -1,0 +1,114 @@
+# DEPARTMENTS — CI.
+#
+# Standard turbo pipeline (typecheck + lint + test + build) plus the two POLICY
+# GATES that must stay green for the platform's safety invariants:
+#
+#   1. (model, knob) gate  — packages/agent-runtime asserts that every agent
+#      knob maps to a valid model/config combo (no agent can request an
+#      un-allowed model or out-of-range parameter). Runs as a normal test.
+#
+#   2. RLS policy gate     — packages/db Row-Level Security policies must scope
+#      every table to `app.current_org`. This needs a real Postgres; the
+#      `rls-policy-gate` job spins up a postgres service container. The test
+#      harness lands in Phase 2 — for now the step is a documented placeholder.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: typecheck · lint · test · build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.2
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm turbo run typecheck
+
+      - name: Lint
+        run: pnpm turbo run lint
+
+      - name: Test
+        run: pnpm turbo run test
+
+      - name: Build
+        run: pnpm turbo run build
+
+      # ── POLICY GATE 1: (model, knob) ──────────────────────────────────────
+      # Runs the agent-runtime suite explicitly so a regression here is an
+      # unmistakable, named failure (not just one dot in the turbo test run).
+      - name: Policy gate · (model, knob)
+        run: pnpm --filter @departments/agent-runtime test
+
+  # ── POLICY GATE 2: RLS ──────────────────────────────────────────────────
+  # Separate job so it owns a Postgres service container. The actual RLS
+  # assertion harness arrives in Phase 2; the placeholder step keeps the gate
+  # visible and the wiring (service + DATABASE_URL + migrate) ready.
+  rls-policy-gate:
+    name: policy gate · RLS (org isolation)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: departments
+          POSTGRES_PASSWORD: departments
+          POSTGRES_DB: departments
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U departments -d departments"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://departments:departments@localhost:5432/departments
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.2
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply schema + RLS policies
+        run: pnpm --filter @departments/db run db:migrate
+
+      - name: RLS policy gate (PLACEHOLDER — Phase 2)
+        run: |
+          echo "TODO(Phase 2): assert RLS org-isolation against the postgres service."
+          echo "Connect as a non-superuser, SET app.current_org to org A, and verify"
+          echo "that rows owned by org B are invisible across every tenant table."

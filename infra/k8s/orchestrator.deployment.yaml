@@ -1,0 +1,34 @@
+# SKELETON — not production. See infra/k8s/README.md.
+# Temporal worker host. Worker-only: connects OUT to Temporal, serves no inbound
+# traffic, so there is intentionally no Service. (Phase 2 worker host.)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator
+  labels:
+    app.kubernetes.io/name: orchestrator
+    app.kubernetes.io/part-of: departments
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orchestrator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orchestrator
+    spec:
+      containers:
+        - name: orchestrator
+          # TODO: replace with the real published image.
+          image: ghcr.io/departments/orchestrator:latest
+          env:
+            # TODO: source secrets from a Secret/ConfigMap (see .env.example).
+            # - name: TEMPORAL_ADDRESS  (ConfigMap)
+            # - name: DATABASE_URL      (Secret)
+            # - name: REDIS_URL         (Secret)
+            # - name: ANTHROPIC_API_KEY (Secret — or fetched via CMA Vault at runtime)
+            - name: TEMPORAL_ADDRESS
+              value: "temporal.departments.svc.cluster.local:7233"
+          # Worker liveness is process-based; a TCP/exec probe lands in Phase 2.
+          # TODO: resources requests/limits + a real workerHealth probe.

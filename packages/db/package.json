@@ -1,0 +1,12 @@
+{
+  "name": "@departments/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Postgres schema, migrations, RLS policies, and seed for Departments. SQL-only package — no runtime deps.",
+  "scripts": {
+    "db:migrate": "echo 'apply sql/ via your runner'",
+    "lint": "echo 'no lint for sql package'",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  }
+}

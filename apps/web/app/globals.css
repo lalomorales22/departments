@@ -1,0 +1,181 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * DEPARTMENTS — design tokens (the single source of hex).
+ * Ethos: instrumentation over decoration · calm-until-it-matters (color = liveness,
+ * rationed) · engineered hairline-bordered surfaces · monospace for machine values.
+ * Glow ONLY on live / selected / focused elements.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+:root {
+  /* surfaces — near-black with a cold blue cast, layered by elevation */
+  --bg-deep: #04060a;
+  --bg: #070a0f;
+  --surface: #0b0f16;
+  --surface-2: #10151e;
+  --surface-3: #161c27;
+
+  /* hairlines */
+  --border: #1a2230;
+  --border-strong: #273042;
+
+  /* text ramp */
+  --text: #e6ebf3;
+  --text-muted: #8b97a8;
+  --text-faint: #56627a;
+
+  /* accents = state. Rationed. (the only place these hex values live) */
+  --accent-cyan: #22d3ee; /* PLAN · selection · focus */
+  --accent-green: #34d399; /* running · healthy · EXECUTE */
+  --accent-amber: #fbbf24; /* review · OPTIMIZE · pending */
+  --accent-purple: #a78bfa; /* EVALUATE · memory · AI cognition */
+  --accent-blue: #60a5fa; /* MEMORY · info */
+  --accent-red: #f87171; /* stop · error · P1 */
+
+  /* glows — applied only to live/selected/focused surfaces */
+  --glow-cyan: 0 0 0 1px rgba(34, 211, 238, 0.35), 0 0 16px -2px rgba(34, 211, 238, 0.45);
+  --glow-green: 0 0 0 1px rgba(52, 211, 153, 0.32), 0 0 16px -2px rgba(52, 211, 153, 0.4);
+  --glow-amber: 0 0 0 1px rgba(251, 191, 36, 0.32), 0 0 16px -2px rgba(251, 191, 36, 0.4);
+  --glow-purple: 0 0 0 1px rgba(167, 139, 250, 0.32), 0 0 16px -2px rgba(167, 139, 250, 0.4);
+  --glow-blue: 0 0 0 1px rgba(96, 165, 250, 0.32), 0 0 16px -2px rgba(96, 165, 250, 0.4);
+  --glow-red: 0 0 0 1px rgba(248, 113, 113, 0.34), 0 0 16px -2px rgba(248, 113, 113, 0.42);
+
+  --elevation: 0 1px 0 0 rgba(255, 255, 255, 0.02), 0 8px 24px -12px rgba(0, 0, 0, 0.7);
+
+  /* radii */
+  --radius-sm: 3px;
+  --radius: 5px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+
+  /* layout */
+  --rail-h: 30px;
+
+  color-scheme: dark;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+    font-feature-settings: 'cv01', 'ss01';
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow: hidden; /* cockpit owns its own scroll regions */
+  }
+
+  ::selection {
+    background: rgba(34, 211, 238, 0.25);
+    color: var(--text);
+  }
+
+  /* numbers line up everywhere they're machine-emitted */
+  .tabular,
+  [data-machine] {
+    font-variant-numeric: tabular-nums;
+    font-family: var(--font-mono), ui-monospace, monospace;
+  }
+}
+
+@layer components {
+  /* a standard engineered surface: hairline border + faint elevation */
+  .panel {
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+
+  .panel-inset {
+    background-color: var(--bg-deep);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+
+  /* section eyebrow label — uppercase, faint, tracked */
+  .eyebrow {
+    font-size: 0.625rem;
+    line-height: 1rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    font-family: var(--font-mono), ui-monospace, monospace;
+  }
+}
+
+@layer utilities {
+  /* keyboard focus — always cyan, never removed */
+  .focus-ring:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 1px var(--bg), 0 0 0 2px var(--accent-cyan);
+  }
+
+  /* hairline dividers */
+  .divider-x {
+    border-bottom: 1px solid var(--border);
+  }
+  .divider-y {
+    border-right: 1px solid var(--border);
+  }
+
+  /* faint dotted grid background for the ops-floor feel */
+  .grid-floor {
+    background-image: radial-gradient(circle at center, var(--border) 0.5px, transparent 0.5px);
+    background-size: 22px 22px;
+  }
+}
+
+/* thin, dark, unobtrusive scrollbars */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+  background-clip: padding-box;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface-3) transparent;
+}
+
+/* respect the user — kill all motion and the dotted mesh when asked */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+@media (prefers-reduced-data: reduce) {
+  .grid-floor {
+    background-image: none;
+  }
+  .reduced-data-hide {
+    display: none !important;
+  }
+}

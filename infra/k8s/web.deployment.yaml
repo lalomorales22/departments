@@ -1,0 +1,59 @@
+# SKELETON — not production. See infra/k8s/README.md.
+# Public cockpit UI (Next.js). Phase 2+ adds Ingress/TLS, HPA, resources.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  labels:
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: departments
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: web
+    spec:
+      containers:
+        - name: web
+          # TODO: replace with the real published image.
+          image: ghcr.io/departments/web:latest
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            # Public WS endpoint the browser connects to (see .env.example).
+            - name: NEXT_PUBLIC_WS_URL
+              value: "wss://gateway.departments.svc.cluster.local"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          # TODO: resources requests/limits.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  labels:
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: departments
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

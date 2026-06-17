@@ -1,0 +1,97 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DEPARTMENTS — Phase 1 local dev stack.
+#
+# Bring up the backing services this monorepo expects, then run the workspace:
+#
+#     pnpm install
+#     docker compose up -d
+#     pnpm db:migrate          # apply packages/db sql/ (RLS policies, schema, seed)
+#     pnpm dev                 # turbo: web (:3000), gateway (:4000), orchestrator
+#
+# Phase 1 ships a FIXTURE-driven UI, so the web app does not strictly need these
+# yet — this stack exists so the gateway/orchestrator have real infra to grow into
+# in Phase 2+. Named volumes live under ./.volumes (gitignored).
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  # Postgres + pgvector — primary store, RLS tenant boundary, embeddings (memory).
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: departments-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: departments
+      POSTGRES_PASSWORD: departments
+      POSTGRES_DB: departments
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./.volumes/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U departments -d departments"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Redis — realtime spine (Redis Streams -> WS hub) + cache + queues.
+  redis:
+    image: redis:7
+    container_name: departments-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./.volumes/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Temporal — durable workflow engine for the orchestrator (Phase 2 worker host).
+  # auto-setup creates the default namespace + schema against the postgres above.
+  temporal:
+    image: temporalio/auto-setup:1.25.2
+    container_name: departments-temporal
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: departments
+      POSTGRES_PWD: departments
+      POSTGRES_SEEDS: postgres
+    ports:
+      - "7233:7233"
+    healthcheck:
+      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # MinIO — S3/R2 stand-in for artifacts (deliverables, snapshots, logs blobs).
+  # Console: http://localhost:9001  (user/pass = minioadmin/minioadmin)
+  minio:
+    image: minio/minio:latest
+    container_name: departments-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./.volumes/minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 10s

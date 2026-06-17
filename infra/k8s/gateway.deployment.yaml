@@ -1,0 +1,63 @@
+# SKELETON — not production. See infra/k8s/README.md.
+# API gateway + WS hub (NestJS). Liveness/readiness on /health.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: departments
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+    spec:
+      containers:
+        - name: gateway
+          # TODO: replace with the real published image.
+          image: ghcr.io/departments/gateway:latest
+          ports:
+            - name: http
+              containerPort: 4000
+          env:
+            - name: PORT
+              value: "4000"
+            # TODO: source secrets from a Secret/ConfigMap (see .env.example).
+            # - name: DATABASE_URL      (Secret)
+            # - name: REDIS_URL         (Secret)
+            # - name: TEMPORAL_ADDRESS  (ConfigMap)
+            # - name: ANTHROPIC_API_KEY (Secret — or fetched via CMA Vault at runtime)
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          # TODO: resources requests/limits.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: departments
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
