@@ -89,8 +89,17 @@ export function ActivityMap() {
       <header className="border-b border-hairline px-3 py-2">
         <SectionLabel
           right={
-            <span className="eyebrow tabular text-faint">
-              <span style={{ color: accentVar('green') }}>{liveCount}</span> / {ACTIVITY_NODES.length} LIVE
+            <span className="flex items-center gap-2">
+              {/* No real geo signal yet — explicitly labeled as a decorative stub (Phase 5). */}
+              <span
+                className="rounded-sm border border-hairline px-1 py-0.5 text-[9px] uppercase leading-none tracking-wider text-faint"
+                title="Decorative — wire to a real event→geo source to make it live"
+              >
+                Stub
+              </span>
+              <span className="eyebrow tabular text-faint">
+                <span style={{ color: accentVar('green') }}>{liveCount}</span> / {ACTIVITY_NODES.length} LIVE
+              </span>
             </span>
           }
         >

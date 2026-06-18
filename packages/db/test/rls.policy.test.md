@@ -204,13 +204,47 @@ Document + assert (this is the only isolation for this object):
   REFRESH MATERIALIZED VIEW CONCURRENTLY org_health_daily;  -- enabled by the unique (org_id,day) index
   ```
 
+## §G — Audit-trail integrity (Phase 5: `0006_audit.sql`)
+
+The append-only spines must be tamper-evident and the cross-tenant integrity
+audit must be clean. As a **scoped** session (org-1, `app.current_org` set, NO
+`app.allow_purge`):
+
+1. **Immutability triggers exist.** `pg_trigger` has `event_immutable`,
+   `run_immutable`, `artifact_version_immutable`, `audit_log_immutable` (all
+   `BEFORE UPDATE OR DELETE`).
+2. **Mutation is rejected.** `UPDATE event SET kind = 'status' WHERE …` and
+   `DELETE FROM run WHERE …` both raise `immutable: …` (SQLSTATE P0001). Same for
+   `artifact_version` and `audit_log`.
+3. **seq is unique + monotonic.** `UNIQUE (loop_id, seq)` exists on `event`;
+   `SELECT seq FROM event WHERE loop_id = $1 ORDER BY seq` has no duplicates, and
+   the app-level hash chain (`verifyChain` in `@departments/events`) re-derives
+   clean over the same ordered rows (content/insert/delete/reorder all detected).
+4. **Audit log captures control-plane changes.** After a scoped
+   `UPDATE app_user SET role = 'operator' WHERE …`, `audit_log` has a matching
+   `operation = 'UPDATE'` row with `old_values->>'role'` ≠ `new_values->>'role'`,
+   `changed_by` = the acting user, and `org_id` = org-1. The audit row itself
+   cannot be updated/deleted (the `audit_log_immutable` trigger).
+5. **No cross-tenant leakage.** `SELECT count(*) FROM rls_violation_audit` returns
+   **0** (every child row's `org_id` matches its parent's).
+6. **Checkpoints bracket the run.** The most recent `audit_snapshot` for org-1 has
+   `rls_enforcement_ok = true`; a fresh checkpoint inserted after the test also has
+   `rls_enforcement_ok = true` and a `mutation_count` consistent with `audit_log`.
+
+`app.allow_purge` is the privileged escape hatch (retention jobs / admin cascade
+deletes only) — the per-request gateway connection MUST NOT set it, so it can
+neither mutate nor delete a spine row.
+
 ## Pass / fail
 
 The gate **passes** only if A, B, C, and D all hold for **every** table in the
-list, **and** E holds for `loop_tree` / `loop_rollup`. Any leak (a foreign-org row
-visible, a cross-org write that succeeds, a table missing RLS/FORCE, or a rollup
-view missing `security_invoker`) **fails the build**. F is an
-app-level/read-path requirement for the matview rather than a row-policy
+list, E holds for `loop_tree` / `loop_rollup`, **and** G holds (immutability
+triggers reject mutation, the hash chain re-derives clean, the audit log records
+control-plane changes, and `rls_violation_audit` is empty). Any leak (a
+foreign-org row visible, a cross-org write that succeeds, a table missing
+RLS/FORCE, a rollup view missing `security_invoker`, a successful UPDATE/DELETE on
+an append-only spine, or a non-empty `rls_violation_audit`) **fails the build**. F
+is an app-level/read-path requirement for the matview rather than a row-policy
 assertion, but the gate must confirm `org_health_daily` is never queried without
 its `org_id` filter.
 

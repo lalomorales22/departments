@@ -10,8 +10,8 @@ import { LogConsole } from './LogConsole';
 import { ActivityMap } from './ActivityMap';
 import { AnalyticsView } from './AnalyticsView';
 import { ArtifactsView } from './ArtifactsView';
+import { SettingsView } from './SettingsView';
 import { ApprovalBanner } from './ApprovalBanner';
-import { SectionLabel } from '../atoms';
 
 /**
  * The center instrument stack. DASHBOARD shows the full cockpit; AGENTS / TASKS focus
@@ -57,21 +57,7 @@ export function CenterColumn({ loopId }: { loopId: string }) {
 
       {activeTab === 'ARTIFACTS' && <ArtifactsView loopId={loopId} />}
       {activeTab === 'ANALYTICS' && <AnalyticsView />}
-      {activeTab === 'SETTINGS' && (
-        <TabStub title="SETTINGS" phase="Phase 5" blurb="Workspace defaults, gate thresholds, members & roles, billing/limits, integrations." />
-      )}
-    </div>
-  );
-}
-
-function TabStub({ title, phase, blurb }: { title: string; phase: string; blurb: string }) {
-  return (
-    <div className="panel grid-floor flex min-h-[320px] flex-col items-center justify-center gap-3 p-8 text-center">
-      <SectionLabel>{title}</SectionLabel>
-      <p className="max-w-md text-sm text-muted">{blurb}</p>
-      <span className="rounded-sm border border-hairline bg-surface-2 px-2 py-0.5 font-mono text-2xs uppercase tracking-wider text-faint">
-        Lands in {phase}
-      </span>
+      {activeTab === 'SETTINGS' && <SettingsView />}
     </div>
   );
 }

@@ -176,14 +176,25 @@ export class FakeCmaRuntime implements LoopAgentRuntime {
     emitE({ ...base('log'), kind: 'log', payload: { level: 'info', source: 'grader', message: `EVALUATE · independent grader (Opus 4.8) · pass ${req.iteration} · ${req.targetSummary}` } });
 
     const failPerf = (this.opts.failFirstPerformanceGate ?? true) && req.iteration === 0;
+    // A STALLED cycle produces no meaningful diff, so the independent grader fails the
+    // gates that depend on real on-mission work (quality + alignment) — mirroring the
+    // heuristic grader's "no meaningful diff ⇒ quality/alignment can't pass" and making
+    // a stuck loop read UNHEALTHY (rolling gate-pass health drops) before it auto-pauses.
+    const stalled = this.opts.stall ?? false;
+    const stalledFail = (category: RubricCategory): boolean =>
+      stalled && (category === 'quality' || category === 'alignment_risk');
     const gates: GateVerdict[] = RUBRIC_CATEGORIES.map((category: RubricCategory) => {
-      const failing = category === 'performance' && failPerf;
-      const score = failing ? 55 + Math.floor(rand() * 10) : 88 + Math.floor(rand() * 10);
+      const failing = (category === 'performance' && failPerf) || stalledFail(category);
+      const score = failing ? 35 + Math.floor(rand() * 20) : 88 + Math.floor(rand() * 10);
       return {
         category,
         passed: !failing,
         score,
-        notes: failing ? 'Below the success-metric threshold; needs a rework pass.' : 'Meets the rubric.',
+        notes: failing
+          ? stalledFail(category)
+            ? 'No meaningful diff to assess — gate cannot pass.'
+            : 'Below the success-metric threshold; needs a rework pass.'
+          : 'Meets the rubric.',
       };
     });
 

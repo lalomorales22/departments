@@ -5,7 +5,7 @@
 
 Departments is an orchestration platform that turns any business function, product, or project into a self-improving **Loop** — an autonomous department of AI agents that owns a mission and runs a perpetual **PLAN → EXECUTE → EVALUATE → IMPROVE → MEMORY** cycle. A top-level `loop ceo` supervises every department, so the whole organization becomes a recursive tree of loops — *loops all the way down*.
 
-> **Status:** Build in progress — **Phases 1–3 of the [5‑phase plan](./TASKS.md) are complete** (Foundations · The Loop Engine · The Live Dashboard). A real loop runs a full cycle on the engine and drives the cockpit live over a reconnect‑safe realtime spine. The repo is itself a `loop software-builder` — its current memory lives in [`HANDOFF.md`](./HANDOFF.md) (read it first), with `README.md` + `TASKS.md` as the founding spec.
+> **Status:** **All five phases of the [5‑phase plan](./TASKS.md) are complete** (Foundations · The Loop Engine · The Live Dashboard · Hierarchy & Meta‑Loop · Production Hardening). A real loop runs full cycles on the engine and drives the cockpit live; a CEO meta‑loop coordinates a guarded tree of child loops; and the platform is hardened — the four gates are **enforced** guardrails (Health % = rolling gate‑pass rate), the cost suite is finalized, history is append‑only/tamper‑evident, alerting + multi‑role RBAC + per‑org security are live, and prod K8s + launch runbooks are authored. Docker/CMA paths are gated behind creds. The repo is itself a `loop software-builder` — its current memory lives in [`HANDOFF.md`](./HANDOFF.md) (read it first), with `README.md` + `TASKS.md` as the founding spec.
 
 ---
 
@@ -398,8 +398,8 @@ Build is sequenced into five demoable, de‑risking phases — full detail in **
 1. ✅ **Foundations** — monorepo, design system, mission‑control shell, data model + RLS, auth, mock realtime, frozen `Event` protocol, cost‑ledger & cache seams.
 2. ✅ **The Loop Engine** — one loop runs a full real cycle on CMA: agent roster, artifacts/Git, independent grader, model tiering + caching, budget enforcement.
 3. ✅ **The Live Dashboard** — the whole cockpit wired to a real loop over a reconnect‑safe realtime spine (`EventStream` → SSE/WS, resume‑by‑`seq` + dedupe); the no‑progress detector + manual single‑step.
-4. **Hierarchy & Meta‑Loop** — L1–L4 trees, CEO coordination (Batch reviews), scheduling, rolled‑up health; concurrency/cadence + irreversible‑action gating + org‑wide cap enforced here.
-5. **Production Hardening** — full cost suite tuned on evals, enforced gates, multi‑tenancy/security, observability/analytics, polish, launch.
+4. ✅ **Hierarchy & Meta‑Loop** — L1–L4 trees, CEO coordination (Batch reviews), scheduling, rolled‑up health; concurrency/cadence + irreversible‑action gating + org‑wide cap enforced here.
+5. ✅ **Production Hardening** — the four gates **enforced** (Health % = rolling gate‑pass rate), full cost suite (caching audit + Fable‑5 cost gate + per‑org budget dashboard), append‑only tamper‑evident history, alerting, multi‑tenancy/RBAC + multi‑role UI, prod K8s + launch runbooks.
 
 ---
 

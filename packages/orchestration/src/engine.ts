@@ -22,9 +22,23 @@ import {
   type ToolConfirmInput,
   type ToolConfirmResult,
 } from '@departments/agent-runtime';
-import { stricterAction } from '@departments/cost';
-import type { AgentRole, CyclePhase, Phase } from '@departments/shared';
+import {
+  OPUS_MODEL_ID,
+  projectedCycleUsd,
+  requiresFableApproval,
+  stricterAction,
+  type CacheAuditor,
+} from '@departments/cost';
+import {
+  DEFAULT_GATE_THRESHOLDS,
+  HealthController,
+  enforceBoundary,
+  type GateOutcome,
+  type GateThresholdConfig,
+} from '@departments/rubrics';
+import { makeAlert, type AgentRole, type AlertSink, type CyclePhase, type Phase } from '@departments/shared';
 import type { DeptEvent } from '@departments/events';
+import type { CleanupPort } from './cleanup.js';
 import {
   type ArtifactPort,
   type ArtifactSnapshot,
@@ -64,6 +78,12 @@ export interface LoopSpec {
   };
   /** Stable extra context folded into the frozen, cache-shaped system prefix. */
   contextPrefix?: string;
+  /**
+   * Whether the gated Fable-5 (greenfield-strategy) cost path is approved for this loop.
+   * When false (default), any role that resolves to Fable is downgraded to Opus and a
+   * `fable-approval-required` alert is raised — Fable is behind explicit cost approval.
+   */
+  fableApproved?: boolean;
 }
 
 export interface EngineDeps {
@@ -97,6 +117,27 @@ export interface EngineDeps {
    * in an org share a bounded session pool. Absent ⇒ unbounded (single-loop default).
    */
   semaphore?: ConcurrencySemaphore;
+  /**
+   * Configurable four-gate pass thresholds. Absent ⇒ {@link DEFAULT_GATE_THRESHOLDS}
+   * (every gate required at 60/100). A tightened threshold both drops Health % and can
+   * raise a phase-boundary barrier (Performance→IMPROVE).
+   */
+  gateConfig?: GateThresholdConfig;
+  /**
+   * Rolling gate-pass {@link HealthController}, threaded across cycles by the composition
+   * root so Health % (= rolling gate pass rate) persists/decays. Absent ⇒ a fresh
+   * per-cycle controller (no cross-cycle memory).
+   */
+  health?: HealthController;
+  /**
+   * Prompt-cache auditor, threaded across cycles so MID-LIFE degradation (a warm loop
+   * going cold after a prompt/tool change) is detectable. Absent ⇒ no cache audit.
+   */
+  cacheAuditor?: CacheAuditor;
+  /** Alert sink for operational hazards (budget/gate/cache/Fable/tool). Absent ⇒ no alerts. */
+  alerts?: AlertSink;
+  /** Loop-stop cleanup hook (archive sessions, free resources). Absent ⇒ no-op. */
+  cleanup?: CleanupPort;
 }
 
 export interface CycleResult {
@@ -116,6 +157,12 @@ export interface CycleResult {
   toolDenied: boolean;
   costUsd: number;
   cacheReadTokens: number;
+  /** Normalized final EVALUATE gate outcomes ([] when paused before a verdict). */
+  gates: GateOutcome[];
+  /** Rolling gate-pass health (0–100) after this cycle — the canonical Loop.health. */
+  health: number;
+  /** True when a REQUIRED gate barrier blocked IMPROVE (Performance→IMPROVE). */
+  gateBlocked: boolean;
 }
 
 const SYSTEM_PROMPT =
@@ -171,6 +218,14 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
   let escalated = false;
   let toolDenied = false;
   const escalation = deps.escalation ?? new EscalationController();
+  // Rolling gate-pass health (the canonical Loop.health), threaded across cycles.
+  const health = deps.health ?? new HealthController();
+  const gateConfig = deps.gateConfig ?? DEFAULT_GATE_THRESHOLDS;
+  let gateOutcomes: GateOutcome[] = [];
+  let healthScore = health.health;
+  let healthDelta = 0;
+  let gateBlocked = false;
+  const fableWarned = new Set<string>();
 
   /** Stricter of the loop and org cap actions — the org-wide cap precedence. */
   const capActionNow = (): CapAction =>
@@ -194,6 +249,33 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
     return { modelId: rm.modelId, effort: tier.allowedEfforts[0] ?? tier.defaultEffort ?? null };
   };
 
+  /**
+   * Fable-5 cost-approval gate: the gated greenfield-strategy path is downgraded to Opus
+   * unless `spec.fableApproved`. Warns + alerts once per role (the projected cycle cost is
+   * the approval reason). Caps + downgrade still take precedence — this only governs which
+   * model a role may use, never whether the loop runs.
+   */
+  const applyFableGate = (model: RoleModel, role: string): RoleModel => {
+    if (spec.fableApproved || !requiresFableApproval(model.modelId)) return model;
+    if (!fableWarned.has(role)) {
+      fableWarned.add(role);
+      const projected = projectedCycleUsd(model.modelId);
+      log(
+        'warn',
+        `fable-approval-required: ${role} resolved to ${model.modelId} (~$${projected.toFixed(2)}/cycle) — downgrading to ${OPUS_MODEL_ID} pending Commander cost approval.`,
+        'guardrail',
+      );
+      deps.alerts?.(
+        makeAlert('fable_approval_required', 'warning', `${role} requested the gated Fable-5 path (~$${projected.toFixed(2)}/cycle).`, {
+          orgId: spec.orgId,
+          loopId,
+          detail: { role, projectedUsd: projected },
+        }),
+      );
+    }
+    return { modelId: OPUS_MODEL_ID, effort: 'high' };
+  };
+
   async function startRole(role: AgentRole, model: RoleModel): Promise<LoopSession> {
     return deps.runtime.startSession({
       loopId,
@@ -212,6 +294,15 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
     const { costUsd } = deps.ledger.recordUsage({ orgId: spec.orgId, loopId, runId }, usage, modelId);
     totalCost += costUsd;
     cacheReadTokens += usage.cacheReadInputTokens;
+    // Cache audit (#1 cost lever): flag MID-LIFE degradation — a loop that was warm and
+    // collapsed to ~0 cache reads (a prompt/tool change invalidated the cached prefix).
+    if (deps.cacheAuditor) {
+      const audit = deps.cacheAuditor.record(loopId, usage);
+      if (audit.degraded) {
+        log('warn', `cache degradation: prompt-cache reads collapsed mid-life (readRatio ${(audit.readRatio * 100).toFixed(0)}%) — the #1 cost lever is disabled; check for a prefix invalidator.`, 'guardrail');
+        deps.alerts?.(makeAlert('cache_degradation', 'warning', 'prompt-cache reads collapsed mid-life', { orgId: spec.orgId, loopId, detail: { readRatio: audit.readRatio } }));
+      }
+    }
     // Take the STRICTER of the loop cap and the org-wide rollup cap: a tree of loops
     // each under its own cap can still pause when their combined spend breaches the
     // org hard cap (the Phase 4 org-wide cap). Both override escalation.
@@ -224,11 +315,13 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
       paused = true;
       log('error', `${scope}hard budget cap reached — pausing loop (precedence: caps override escalation).`, 'guardrail');
       emit({ id: `${runId}-pause`, seq: 0, loopId, runId, ts: clock.now(), kind: 'status', payload: { scope: 'loop', targetId: loopId, loopStatus: 'paused' } });
+      deps.alerts?.(makeAlert('budget_breach', 'critical', `${scope}hard budget cap reached — loop paused.`, { orgId: spec.orgId, loopId, detail: { scope: orgDriven ? 'org' : 'loop' } }));
       return { costUsd, pauseNow: true };
     }
     if (cap === 'downgrade' && !downgraded) {
       downgraded = true;
       log('warn', `${scope}soft budget cap reached — downgrading effort for the rest of the cycle.`, 'guardrail');
+      deps.alerts?.(makeAlert('budget_breach', 'warning', `${scope}soft budget cap reached — effort downgraded.`, { orgId: spec.orgId, loopId, detail: { scope: orgDriven ? 'org' : 'loop' } }));
     }
     return { costUsd, pauseNow: false };
   }
@@ -265,6 +358,7 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
           id: `${eid}-deny`, seq: 0, loopId, runId, ts: clock.now(), kind: 'tool_use',
           payload: { agentId: req.agentId, tool: req.tool, phase: 'error', summary: `denied · ${decision.reason ?? 'no reason'}` },
         });
+        deps.alerts?.(makeAlert('tool_denied', 'info', `irreversible tool "${req.tool}" denied — ${decision.reason ?? 'no reason'} (rerouted).`, { orgId: spec.orgId, loopId, detail: { tool: req.tool } }));
       }
       return decision;
     };
@@ -300,6 +394,8 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
         log('warn', `escalation refused at rework ${iteration} — budget cap/headroom takes precedence (caps override escalation).`, 'guardrail');
       }
     }
+    // Fable-5 cost-approval gate: downgrade an unapproved Fable selection to Opus.
+    model = applyFableGate(model, String(roleKey));
     // Concurrency semaphore: hold a per-org session slot for the lifetime of this
     // session (acquired after any manual-step wait, released in `finally`).
     const release = deps.semaphore ? await deps.semaphore.acquire(orgKey) : null;
@@ -336,7 +432,7 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
       log('info', `awaiting manual step → EVALUATE${iteration > 0 ? ` (rework ${iteration})` : ''}`, 'step');
       await stepGate.beforePhase({ loopId, runId, cycle: spec.cycle, phase: 'evaluate', iteration });
     }
-    const model = roleOf('reviewer');
+    const model = applyFableGate(roleOf('reviewer'), 'reviewer');
     const release = deps.semaphore ? await deps.semaphore.acquire(orgKey) : null;
     let pauseNow = false;
     let verdict: OutcomeVerdict;
@@ -392,15 +488,42 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
     log('warn', `gates not fully satisfied after ${iteration} rework(s): ${verdict.result}.`, 'grader');
   }
 
+  // ── GATES ENFORCED + HEALTH (Health % = rolling gate pass rate) ───────────────
+  // The independent grader scored all four gates in EVALUATE. Roll the cycle's pass
+  // rate into the loop's rolling health, then enforce the configured thresholds at the
+  // boundary: a REQUIRED gate below threshold raises a barrier that SKIPS IMPROVE and
+  // records the failed cycle straight to MEMORY (gates are now binding, not advisory).
+  if (verdict && !paused) {
+    gateOutcomes = verdict.gates.map((g) => ({ category: g.category, passed: g.passed, score: g.score }));
+    const priorHealth = health.health;
+    healthScore = health.recordGates(gateOutcomes, gateConfig);
+    healthDelta = healthScore - priorHealth;
+    // EVALUATE enforces all four gates; a REQUIRED gate still below threshold after the
+    // bounded rework raises the barrier (gates are binding — don't OPTIMIZE on top of
+    // unsatisfied work; Performance→IMPROVE is the canonical case).
+    const evalGate = enforceBoundary('evaluate', gateOutcomes, gateConfig);
+    gateBlocked = !evalGate.allowed;
+    if (gateBlocked) {
+      log('warn', `gate barrier — below threshold: ${evalGate.blocking.join(', ')} (health ${healthScore}%).`, 'gate');
+      deps.alerts?.(makeAlert('gate_failure', 'warning', `gate(s) below threshold: ${evalGate.blocking.join(', ')}`, { orgId: spec.orgId, loopId, detail: { blocking: evalGate.blocking, health: healthScore } }));
+    } else {
+      log('info', `four gates cleared — health ${healthScore}%.`, 'gate');
+    }
+  }
+
   // ── IMPROVE (OPTIMIZE) ───────────────────────────────────────────────────────
-  await runPhase(
-    spec.roles.coordinator ? 'coordinator' : 'reviewer',
-    spec.roles.coordinator ? 'coordinator' : 'reviewer',
-    'improve',
-    'Distill learnings into REPORT.md; reprioritize the backlog.',
-    planContext,
-    0,
-  );
+  if (gateBlocked) {
+    log('warn', 'Performance gate barrier — skipping IMPROVE; recording the failed cycle to MEMORY.', 'gate');
+  } else {
+    await runPhase(
+      spec.roles.coordinator ? 'coordinator' : 'reviewer',
+      spec.roles.coordinator ? 'coordinator' : 'reviewer',
+      'improve',
+      'Distill learnings into REPORT.md; reprioritize the backlog.',
+      planContext,
+      0,
+    );
+  }
 
   // ── MEMORY ───────────────────────────────────────────────────────────────────
   const mem = await runPhase('docs', 'docs', 'memory', 'Write HANDOFF.md; distill one durable insight.', planContext, 0);
@@ -416,9 +539,19 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
     if (originalHandoff !== null) await writeFile(handoffPath, originalHandoff, 'utf8');
     else await rm(handoffPath, { force: true });
   } else {
-    log('info', `cycle ${spec.cycle} complete · ${reworks} rework(s) · $${totalCost.toFixed(4)} · cacheRead=${cacheReadTokens}`);
+    // Emit the canonical Loop.health metric (rolling gate-pass rate) at the cycle
+    // boundary so every consumer — cockpit, ANALYTICS, org_health_daily — reads ONE
+    // health number sourced from the gates (the durable Temporal path emits this too).
+    emit({
+      id: `${runId}-health`, seq: 0, loopId, runId, ts: clock.now(), kind: 'metric',
+      payload: { key: 'health', name: 'Loop Health', value: healthScore, display: `${healthScore}%`, delta: healthDelta, goodDirection: 'up', unit: 'percent' },
+    });
+    log('info', `cycle ${spec.cycle} complete · health ${healthScore}% · ${reworks} rework(s) · $${totalCost.toFixed(4)} · cacheRead=${cacheReadTokens}`);
     emit({ id: `${runId}-done`, seq: 0, loopId, runId, ts: clock.now(), kind: 'status', payload: { scope: 'loop', targetId: loopId, loopStatus: 'idle' } });
   }
+
+  // Loop-stop cleanup: archive sessions + free resources (no orphaned resources).
+  await deps.cleanup?.archive({ loopId, runId, cycle: spec.cycle, reason: paused ? 'paused' : 'completed' });
 
   return {
     loopId,
@@ -434,5 +567,8 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
     toolDenied,
     costUsd: totalCost,
     cacheReadTokens,
+    gates: gateOutcomes,
+    health: healthScore,
+    gateBlocked,
   };
 }

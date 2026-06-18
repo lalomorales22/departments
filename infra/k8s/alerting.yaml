@@ -1,0 +1,81 @@
+# ════════════════════════════════════════════════════════════════════════════
+# alerting.yaml — Phase 5 Prometheus alert rules.
+#
+# Mirrors the in-app AlertKinds (@departments/shared/alerts): budget breach,
+# no-progress pause, refusal storm, stream degradation, RLS anomaly. The engine
+# raises the same hazards in-process via the AlertSink (for the cockpit + audit
+# trail); these rules are the OPERATIONAL paging layer over the metrics the
+# gateway/orchestrator export. Metric names are the intended Prometheus series —
+# wire the exporters to emit them.
+# ════════════════════════════════════════════════════════════════════════════
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: departments-alerts
+  labels:
+    app.kubernetes.io/part-of: departments
+    role: alert-rules
+spec:
+  groups:
+    - name: departments.cost
+      rules:
+        - alert: OrgBudgetHardCapBreached
+          expr: departments_org_budget_utilization >= 1
+          for: 1m
+          labels: { severity: critical }
+          annotations:
+            summary: "Org {{ $labels.org_id }} breached its hard budget cap — loops paused"
+            runbook: "docs/runbooks/COST_GOVERNANCE.md"
+        - alert: OrgBudgetSoftCap
+          expr: departments_org_budget_utilization >= 0.8
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: "Org {{ $labels.org_id }} over soft cap (80%) — effort downgraded"
+        - alert: PromptCacheDegraded
+          # cache read ratio ~0 across recent ticks of a loop = the #1 lever is disabled
+          expr: avg_over_time(departments_cache_read_ratio[15m]) < 0.05
+          for: 15m
+          labels: { severity: warning }
+          annotations:
+            summary: "Loop {{ $labels.loop_id }} prompt cache cold/degraded"
+            runbook: "docs/runbooks/COST_GOVERNANCE.md"
+    - name: departments.health
+      rules:
+        - alert: LoopNoProgressPaused
+          expr: increase(departments_no_progress_pauses_total[10m]) > 0
+          labels: { severity: warning }
+          annotations:
+            summary: "Loop {{ $labels.loop_id }} auto-paused (no meaningful progress)"
+            runbook: "docs/runbooks/RUNAWAY_LOOP.md"
+        - alert: GateBarrierSustained
+          expr: departments_loop_health < 50
+          for: 30m
+          labels: { severity: warning }
+          annotations:
+            summary: "Loop {{ $labels.loop_id }} health < 50% (gates failing)"
+    - name: departments.reliability
+      rules:
+        - alert: RefusalStorm
+          expr: increase(departments_model_refusals_total[5m]) >= 3
+          labels: { severity: warning }
+          annotations:
+            summary: "Refusal storm — Fable refusal-safe fallback may not be holding"
+            runbook: "docs/runbooks/REFUSAL_STORM.md"
+        - alert: StreamDegradation
+          # WS/Redis spine: seq gaps or heartbeat misses
+          expr: increase(departments_stream_gaps_total[5m]) > 0 or departments_ws_stale == 1
+          for: 2m
+          labels: { severity: warning }
+          annotations:
+            summary: "Realtime spine degraded (seq gaps / stale heartbeat)"
+    - name: departments.security
+      rules:
+        - alert: RLSViolation
+          # rls_violation_audit (0006_audit.sql) should ALWAYS be 0
+          expr: departments_rls_violations > 0
+          for: 0m
+          labels: { severity: critical }
+          annotations:
+            summary: "CROSS-TENANT LEAK: rls_violation_audit is non-empty"
+            runbook: "docs/runbooks/TENANT_ISOLATION_INCIDENT.md"

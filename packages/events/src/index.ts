@@ -157,3 +157,10 @@ export interface CmaEventNormalizer {
   /** @param raw a single CMA SSE frame (shape owned by the runtime adapter). */
   normalize(raw: unknown): DeptEvent[];
 }
+
+// ─── Tamper-evident audit chain (sidecar; protocol stays frozen) ───────────────
+//
+// The hash chain lives in a SEPARATE entry — `@departments/events/audit` — because it
+// uses `node:crypto` (server-only). Keeping it off this barrel means the browser bundle
+// (which imports the protocol types + topic/resume helpers via realtime) never pulls in
+// a node built-in. Node consumers (gateway sink, CI RLS gate) import it explicitly.

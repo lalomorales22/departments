@@ -1,14 +1,103 @@
 'use client';
 
-import { RUBRIC_CATEGORIES, RUBRIC_CATEGORY_LABELS } from '@departments/shared';
-import { getAgents, getLoop } from '@/lib/fixtures';
+import { RUBRIC_CATEGORIES, RUBRIC_CATEGORY_LABELS, type RubricCategory } from '@departments/shared';
+import { getAgents, getGates, getLoop } from '@/lib/fixtures';
 import { accentVar, rubricAccent } from '@/lib/status-theme';
 import { cn } from '@/lib/cn';
 import { SectionLabel } from '@/components/atoms';
 import { useCockpit } from '@/lib/store';
+import { useCan } from '@/lib/rbac';
 
-/** Default gate pass threshold (presentational; the engine owns the real value). */
-const GATE_THRESHOLD = 80;
+/** Default gate pass threshold — mirrors the engine's DEFAULT_GATE_MIN_SCORE (60/100). */
+const GATE_THRESHOLD = 60;
+
+function healthAccentKey(h: number): 'green' | 'amber' | 'red' {
+  return h >= 85 ? 'green' : h >= 60 ? 'amber' : 'red';
+}
+
+/**
+ * The four gate-threshold sliders, now LIVE (Phase 5) with a Health-impact preview:
+ * Health % = the rolling gate-pass rate, so raising a threshold above a gate's current
+ * score flips it to failing and drops the previewed health. Editable only with the
+ * `gate.threshold.edit` capability (Commander); others see the current thresholds
+ * read-only. Edits are optimistic (store override + a best-effort PATCH).
+ */
+function GateThresholdEditor({ loopId }: { loopId: string }) {
+  const overrides = useCockpit((s) => s.gateThresholds[loopId]);
+  const setGateThreshold = useCockpit((s) => s.setGateThreshold);
+  const canEdit = useCan('gate.threshold.edit');
+  const gates = getGates(loopId);
+  const scoreOf = (cat: RubricCategory) => gates.find((g) => g.category === cat)?.score ?? 0;
+  const thresholdOf = (cat: RubricCategory) => overrides?.[cat] ?? GATE_THRESHOLD;
+
+  // Preview: a gate clears when the grader passed it AND its score meets the threshold.
+  // Match the engine's gatePassRate exactly — divide by GRADED categories only (a
+  // category with no outcome yet doesn't count), and an ungraded loop is presumed
+  // healthy (100%), so the cockpit preview never disagrees with the engine's Health %.
+  const graded = RUBRIC_CATEGORIES.filter((cat) => gates.some((g) => g.category === cat));
+  const cleared = graded.filter((cat) => {
+    const g = gates.find((x) => x.category === cat);
+    return g?.passed && g.score >= thresholdOf(cat);
+  }).length;
+  const previewHealth = graded.length === 0 ? 100 : Math.round((cleared / graded.length) * 100);
+
+  return (
+    <Block
+      label="Gate Thresholds"
+      right={
+        <span className="tabular text-2xs" style={{ color: accentVar(healthAccentKey(previewHealth)) }}>
+          HEALTH {previewHealth}%
+        </span>
+      }
+    >
+      <ul className="flex flex-col gap-3">
+        {RUBRIC_CATEGORIES.map((cat) => {
+          const color = accentVar(rubricAccent[cat]);
+          const threshold = thresholdOf(cat);
+          const score = scoreOf(cat);
+          const passes = (gates.find((g) => g.category === cat)?.passed ?? false) && score >= threshold;
+          return (
+            <li key={cat}>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="text-xs text-muted">{RUBRIC_CATEGORY_LABELS[cat]}</span>
+                <span className="tabular text-2xs">
+                  <span style={{ color: accentVar(passes ? 'green' : 'red') }}>{score}</span>
+                  <span className="text-faint"> / </span>
+                  <span style={{ color }}>{threshold}%</span>
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={1}
+                value={threshold}
+                disabled={!canEdit}
+                aria-label={`${RUBRIC_CATEGORY_LABELS[cat]} pass threshold`}
+                onChange={(e) => {
+                  const next = Number(e.target.value);
+                  setGateThreshold(loopId, cat, next);
+                  void fetch(`/api/loops/${encodeURIComponent(loopId)}/gates`, {
+                    method: 'PATCH',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ category: cat, threshold: next }),
+                  }).catch(() => {
+                    /* optimistic — durable write is the engine/DB path */
+                  });
+                }}
+                className={cn('h-1 w-full cursor-pointer accent-current disabled:cursor-not-allowed disabled:opacity-60')}
+                style={{ color }}
+              />
+            </li>
+          );
+        })}
+      </ul>
+      {!canEdit && (
+        <p className="mt-2 text-2xs text-faint">Threshold editing requires the Commander role.</p>
+      )}
+    </Block>
+  );
+}
 
 /** Cadence options the schedule editor offers (mirrors the engine's cadence floors). */
 const CADENCE_OPTIONS = ['continuous', 'hourly', 'daily', 'nightly', 'weekly', 'manual', 'on-demand'];
@@ -177,49 +266,8 @@ export function InspectorConfig({ loopId }: { loopId: string }) {
         )}
       </Block>
 
-      {/* GATE THRESHOLDS */}
-      <Block
-        label="Gate Thresholds"
-        right={<span className="tabular text-2xs text-faint">DEFAULT {GATE_THRESHOLD}%</span>}
-      >
-        <ul className="flex flex-col gap-3">
-          {RUBRIC_CATEGORIES.map((cat) => {
-            const accent = rubricAccent[cat];
-            const color = accentVar(accent);
-            return (
-              <li key={cat}>
-                <div className="mb-1 flex items-center justify-between gap-2">
-                  <span className="text-xs text-muted">{RUBRIC_CATEGORY_LABELS[cat]}</span>
-                  <span className="tabular text-2xs" style={{ color }}>
-                    {GATE_THRESHOLD}%
-                  </span>
-                </div>
-                {/* visually-disabled slider: filled track + knob at threshold */}
-                <div
-                  className="relative h-1 w-full cursor-not-allowed rounded-full bg-bg-deep opacity-60"
-                  role="slider"
-                  aria-valuenow={GATE_THRESHOLD}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-label={`${RUBRIC_CATEGORY_LABELS[cat]} threshold (read-only)`}
-                  aria-disabled
-                >
-                  <div
-                    className="absolute inset-y-0 left-0 rounded-full"
-                    style={{ width: `${GATE_THRESHOLD}%`, backgroundColor: color }}
-                    aria-hidden
-                  />
-                  <div
-                    className="absolute top-1/2 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-hairline-strong bg-surface-3"
-                    style={{ left: `${GATE_THRESHOLD}%` }}
-                    aria-hidden
-                  />
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      </Block>
+      {/* GATE THRESHOLDS — live sliders + Health-impact preview (Phase 5) */}
+      <GateThresholdEditor loopId={loopId} />
     </div>
   );
 }

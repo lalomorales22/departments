@@ -1,0 +1,123 @@
+# ════════════════════════════════════════════════════════════════════════════
+# production.yaml — Phase 5 production overlay for the Departments platform.
+#
+# Layers production concerns onto the skeleton Deployments (gateway/orchestrator/web):
+#   • Horizontal autoscaling for the WS hub (gateway) + Temporal workers (orchestrator)
+#     — "runs indefinitely" means thousands of concurrent workflows; scale on CPU + a
+#     custom queue-depth metric.
+#   • PodDisruptionBudgets so a rolling node drain never takes the whole hub down.
+#   • A ConfigMap (non-secret) + a Secret TEMPLATE (creds — populated from KMS/sealed
+#     secrets, NEVER committed). Agent-facing creds are injected via CMA Vaults at
+#     egress, not mounted into the sandbox.
+#   • Resource requests/limits so the scheduler + autoscaler have signal.
+#
+# Apply AFTER the base manifests:  kubectl apply -f infra/k8s/
+# Prod data tier (Postgres+pgvector / Redis / R2 / KMS) is provisioned out-of-band
+# (managed services) and referenced by the Secret below.
+# ════════════════════════════════════════════════════════════════════════════
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: departments-config
+  labels:
+    app.kubernetes.io/part-of: departments
+data:
+  NODE_ENV: "production"
+  TEMPORAL_ADDRESS: "temporal-frontend:7233"
+  # The org-scoped RLS GUC + audit user GUC are set per-request by the gateway, not here.
+  EVENT_PROTOCOL_VERSION: "1"
+  USE_CMA_RUNTIME: "true"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: departments-secrets
+  labels:
+    app.kubernetes.io/part-of: departments
+  annotations:
+    # Populated by the cluster's secret manager (sealed-secrets / external-secrets / KMS).
+    # NEVER commit real values; agent-facing creds live in CMA Vaults (egress injection).
+    departments.dev/source: "kms"
+type: Opaque
+stringData:
+  DATABASE_URL: "REPLACE_VIA_KMS"        # the gateway role: NOT superuser, NO BYPASSRLS
+  DATABASE_URL_PRIVILEGED: "REPLACE_VIA_KMS"  # BYPASSRLS — matview refresh + admin purge ONLY
+  REDIS_URL: "REPLACE_VIA_KMS"
+  ANTHROPIC_API_KEY: "REPLACE_VIA_KMS"
+  R2_ACCESS_KEY_ID: "REPLACE_VIA_KMS"
+  R2_SECRET_ACCESS_KEY: "REPLACE_VIA_KMS"
+  WEBHOOK_HMAC_SECRET: "REPLACE_VIA_KMS"
+---
+# Autoscale the WS hub on CPU; in prod also add a custom metric on active WS connections.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: departments
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: gateway
+  minReplicas: 3
+  maxReplicas: 30
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 65
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300 # don't drop WS capacity on a brief lull
+---
+# Autoscale Temporal workers on CPU; in prod also scale on task-queue backlog.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: orchestrator
+  labels:
+    app.kubernetes.io/name: orchestrator
+    app.kubernetes.io/part-of: departments
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: orchestrator
+  minReplicas: 3
+  maxReplicas: 50
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/part-of: departments
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: orchestrator
+  labels:
+    app.kubernetes.io/part-of: departments
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orchestrator

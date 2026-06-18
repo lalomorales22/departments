@@ -12,9 +12,13 @@
 | `web.deployment.yaml`             | `@departments/web` (Next) | 3000 | Public cockpit UI. |
 | `gateway.deployment.yaml`         | `@departments/gateway`    | 4000 | API + WS hub. Liveness on `/health`. |
 | `orchestrator.deployment.yaml`    | `@departments/orchestrator` | —  | Temporal worker host. No inbound Service (worker only). |
+| `production.yaml` **(Phase 5)**   | overlay                   | —    | HPA (gateway + orchestrator), PDBs, `ConfigMap` + `Secret` template (KMS-sourced). Apply AFTER the base. |
+| `alerting.yaml` **(Phase 5)**     | `PrometheusRule`          | —    | Budget breach, no-progress pause, refusal storm, stream degradation, RLS anomaly — mirrors `@departments/shared/alerts`. |
 
-Each file contains a `Deployment` and (where it serves inbound traffic) a
-ClusterIP `Service`.
+Each base file contains a `Deployment` and (where it serves inbound traffic) a
+ClusterIP `Service`. Operational procedures live in
+[`docs/runbooks/`](../../docs/runbooks/) (kill-switch, runaway loop, tenant-isolation
+incident, refusal storm, cost governance, RLS audit, deployment).
 
 ## Config & secrets (TODO before real use)
 

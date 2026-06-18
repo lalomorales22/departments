@@ -52,9 +52,9 @@ const PORT = Number(process.env.PORT ?? 4000);
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
 
-  // [AUTH MIDDLEWARE]  app.use(authMiddleware)             — Phase 2
-  // [RBAC GUARDS]      app.useGlobalGuards(new RbacGuard()) — Phase 2
-  // [RLS ORG-CONTEXT]  app.useGlobalInterceptors(orgCtx)    — Phase 2
+  // [AUTH MIDDLEWARE]  AuthMiddleware (AppModule.configure) resolves caller→role+org.   — Phase 5
+  // [RBAC GUARDS]      RbacGuard (APP_GUARD) enforces @RequireCapability(...).          — Phase 5
+  // [RLS ORG-CONTEXT]  OrgContextInterceptor sets app.current_org per request (gated).  — Phase 5
   // [WS HUB / REPLAY]  RealtimeModule fans the per-loop EventStream out over /ws with
   //                    resume-by-seq + dedupe + heartbeats (Phase 3, this build).
   app.useWebSocketAdapter(new WsAdapter(app));

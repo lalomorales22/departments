@@ -8,10 +8,10 @@
 import { FakeCmaRuntime, type LoopAgentRuntime } from '@departments/agent-runtime';
 import { GitArtifactStore } from '@departments/artifacts';
 import { FileMemoryStore, InMemoryMemoryStore } from '@departments/memory';
-import { RubricLibrary } from '@departments/rubrics';
-import { BudgetLedger } from '@departments/cost';
+import { HealthController, RubricLibrary, type GateThresholdConfig } from '@departments/rubrics';
+import { BudgetLedger, CacheAuditor } from '@departments/cost';
 import type { DeptEvent } from '@departments/events';
-import type { Loop, LoopLevel, LoopStatus, LoopTreeNode } from '@departments/shared';
+import { makeAlert, type AlertSink, type Loop, type LoopLevel, type LoopStatus, type LoopTreeNode } from '@departments/shared';
 import { bootstrap } from './bootstrap.js';
 import { runCycle, type CycleResult, type EngineDeps, type LoopSpec } from './engine.js';
 import { NoProgressDetector, type NoProgressConfig } from './no-progress.js';
@@ -84,6 +84,16 @@ export interface RunLoopOptions {
   now?: () => number;
   /** Injected sleep for cadence floors; omit to record ticks without waiting. */
   sleep?: (ms: number) => Promise<void>;
+  /** Configurable four-gate thresholds (Phase 5). Omit for the default 60/100 bar. */
+  gateConfig?: GateThresholdConfig;
+  /** Approve the gated Fable-5 cost path for this loop. Default false ⇒ downgrade to Opus. */
+  fableApproved?: boolean;
+  /** Alert sink for operational hazards (budget/gate/cache/Fable/no-progress). */
+  alerts?: AlertSink;
+  /** Rolling gate-pass HealthController, threaded across cycles. Omit for a fresh one. */
+  health?: HealthController;
+  /** Prompt-cache auditor, threaded across cycles (mid-life degradation). Omit for a fresh one. */
+  cacheAuditor?: CacheAuditor;
 }
 
 const DEFAULT_ROLES: LoopSpec['roles'] = {
@@ -150,7 +160,7 @@ export interface RunLoopResult {
   workspaceDir: string;
   /** True when the no-progress detector auto-paused the loop (distinct from budget pause). */
   noProgressPaused: boolean;
-  /** Final loop health (0–100) per the no-progress detector. */
+  /** Final loop health (0–100) — the last cycle's rolling gate-pass rate (engine-owned). */
   health: number;
   /** Total USD this loop spent (from the ledger) — feeds tree rollup + the org cap. */
   spentUsd: number;
@@ -182,6 +192,9 @@ export async function runLoopLocally(opts: RunLoopOptions): Promise<RunLoopResul
   const persistence = streamingPersistence(observe, opts.onRun);
   // One escalation controller threaded across this run's cycles so decay persists.
   const escalation = opts.escalation ?? new EscalationController();
+  // Health (rolling gate-pass rate) + cache auditor, threaded across this run's cycles.
+  const health = opts.health ?? new HealthController();
+  const cacheAuditor = opts.cacheAuditor ?? new CacheAuditor();
   const deps: EngineDeps = {
     runtime: opts.runtime ?? new FakeCmaRuntime(),
     artifacts,
@@ -193,6 +206,10 @@ export async function runLoopLocally(opts: RunLoopOptions): Promise<RunLoopResul
     toolGate: opts.toolGate,
     escalation,
     semaphore: opts.semaphore,
+    gateConfig: opts.gateConfig,
+    alerts: opts.alerts,
+    health,
+    cacheAuditor,
   };
 
   /** Emit a driver-level event on the same monotonic per-loop seq as the engine. */
@@ -240,6 +257,7 @@ export async function runLoopLocally(opts: RunLoopOptions): Promise<RunLoopResul
         cycle,
         maxIterations: opts.maxIterations ?? 2,
         roles: opts.roles ?? DEFAULT_ROLES,
+        fableApproved: opts.fableApproved,
       },
       deps,
     );
@@ -247,27 +265,14 @@ export async function runLoopLocally(opts: RunLoopOptions): Promise<RunLoopResul
     // Budget cap PRECEDENCE: a hard-cap pause halts before any no-progress logic.
     if (result.paused) break;
 
-    // No-progress detection runs at the cycle boundary on a cleanly-completed cycle.
+    // The canonical Loop.health metric (rolling gate-pass rate) is now emitted by the
+    // engine at the cycle boundary. The driver keeps the no-progress detector as the
+    // INDEPENDENT auto-pause guard: H consecutive cycles with no meaningful diff and no
+    // metric movement halt the loop even if the gates nominally pass.
     const meaningful = result.snapshots.some((s) => s.meaningful);
     const outcome = detector.record({ meaningful, metricMoved: metricMovedThisCycle });
     const ts = new Date().toISOString();
     const runId = result.runId;
-    emit({
-      id: `${runId}-health-${driverSeq++}`,
-      loopId,
-      runId,
-      ts,
-      kind: 'metric',
-      payload: {
-        key: 'health',
-        name: 'Loop Health',
-        value: outcome.health,
-        display: `${outcome.health}%`,
-        delta: outcome.stalled ? -1 : 1,
-        goodDirection: 'up',
-        unit: 'percent',
-      },
-    });
     if (outcome.shouldPause) {
       noProgressPaused = true;
       emit({
@@ -279,7 +284,7 @@ export async function runLoopLocally(opts: RunLoopOptions): Promise<RunLoopResul
         payload: {
           level: 'error',
           source: 'guardrail',
-          message: `no-progress detector: ${outcome.consecutiveStalls} cycle(s) with no meaningful diff or metric movement — auto-pausing (health ${outcome.health}%).`,
+          message: `no-progress detector: ${outcome.consecutiveStalls} cycle(s) with no meaningful diff or metric movement — auto-pausing (health ${result.health}%).`,
         },
       });
       emit({
@@ -290,15 +295,25 @@ export async function runLoopLocally(opts: RunLoopOptions): Promise<RunLoopResul
         kind: 'status',
         payload: { scope: 'loop', targetId: loopId, loopStatus: 'paused' },
       });
+      opts.alerts?.(
+        makeAlert('no_progress_pause', 'warning', `${loopId} auto-paused after ${outcome.consecutiveStalls} stalled cycle(s).`, {
+          orgId,
+          loopId,
+          detail: { consecutiveStalls: outcome.consecutiveStalls, health: result.health },
+        }),
+      );
       break;
     }
     cycle += 1;
   }
+  // Loop health = the last completed cycle's rolling gate-pass health (engine-owned),
+  // falling back to the no-progress detector when no cycle completed.
+  const lastHealth = results.length > 0 ? results[results.length - 1]!.health : detector.health;
   return {
     results,
     workspaceDir,
     noProgressPaused,
-    health: detector.health,
+    health: lastHealth,
     spentUsd: budget.status(loopId).spentUsd,
   };
 }

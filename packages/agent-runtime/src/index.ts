@@ -15,3 +15,6 @@ export * from './batch.js';
 export * from './normalizer.js';
 export * from './cma.js';
 export * from './fable.js';
+// Phase 5: security posture (secret hygiene, prompt-injection, network egress) + Vaults.
+export * from './security.js';
+export * from './vault.js';

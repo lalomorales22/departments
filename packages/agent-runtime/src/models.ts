@@ -219,6 +219,65 @@ export function validateKnobs(modelId: ModelId, knobs: ModelKnobs): string[] {
   return violations;
 }
 
+// ─── Per-route effort policy (Phase 5: swept on evals, then LOCKED) ─────────────
+
+/**
+ * The LOCKED per-tier effort policy — the Phase 5 deliverable "lock per-route defaults
+ * (workers: no effort; executors `medium`/`high`; judgment `high`/`xhigh`)." After
+ * sweeping `effort` per route on real eval sets, these are the authoritative defaults
+ * the composition root pins for each role:
+ *   - worker   → no effort (the param errors on Haiku — omit it).
+ *   - executor → `medium` (climbs to `high` under escalation; ceiling `max`).
+ *   - judgment → `high` (planner + grader; `xhigh` only for hard agentic work).
+ *   - strategy → `xhigh` (gated Fable; behind explicit cost approval).
+ * Each value is asserted legal for its tier by {@link validateLockedEffortPolicy}.
+ */
+export const LOCKED_ROLE_EFFORT: Readonly<Record<ModelRole, Effort | null>> = {
+  worker: null,
+  executor: 'medium',
+  judgment: 'high',
+  strategy: 'xhigh',
+};
+
+/** The locked effort for a model id (resolved via its tier role). `null` ⇒ omit effort. */
+export function lockedEffortForModel(modelId: ModelId): Effort | null {
+  return LOCKED_ROLE_EFFORT[getTier(modelId).role];
+}
+
+/** One row of an `effort` sweep result — what a route's effort was tuned to, and why. */
+export interface EffortSweepEntry {
+  readonly role: ModelRole;
+  readonly modelId: ModelId;
+  readonly effortBefore: Effort | null;
+  readonly effortAfter: Effort | null;
+  /** Marginal per-call USD delta of the change (negative = cheaper). */
+  readonly costDeltaUsd: number;
+  readonly rationale: string;
+}
+
+/**
+ * Validate a locked effort policy: every (tier-role → effort) pairing must be legal for
+ * the tier's model (so a sweep can never lock in an illegal rung like `xhigh` on
+ * Sonnet or any `effort` on Haiku). Returns human-readable violations — EMPTY = legal.
+ */
+export function validateLockedEffortPolicy(
+  policy: Readonly<Record<ModelRole, Effort | null>> = LOCKED_ROLE_EFFORT,
+): string[] {
+  const violations: string[] = [];
+  for (const tier of MODEL_TIERS) {
+    const effort = policy[tier.role];
+    if (effort === null || effort === undefined) {
+      if (tier.supportsEffort && tier.role !== 'worker') {
+        // Not illegal, but flag a route that pins no effort on a model that supports it.
+        violations.push(`${tier.role} (${tier.modelId}): no locked effort for a model that supports it.`);
+      }
+      continue;
+    }
+    violations.push(...validateKnobs(tier.modelId, { effort }).map((v) => `${tier.role}: ${v}`));
+  }
+  return violations;
+}
+
 // ─── Escalation stub (Phase 4 enforces precedence) ─────────────────────────────
 
 /**

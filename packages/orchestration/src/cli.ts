@@ -7,6 +7,9 @@
  *   tsx src/cli.ts marketing --stream                                             # NDJSON events
  *   tsx src/cli.ts marketing --stream --step                                      # manual single-step (stdin)
  *   tsx src/cli.ts marketing --stream --stall --cycles 5                          # demo no-progress auto-pause
+ *   tsx src/cli.ts software-builder --gate-strict 99                               # demo the gate barrier (skips IMPROVE) + health drop
+ *   tsx src/cli.ts software-builder --fable                                        # demo the Fable-5 cost-approval gate (downgrades to Opus)
+ *   tsx src/cli.ts software-builder --fable --fable-approve                        # approve the gated Fable path
  *
  * In --stream mode ONLY newline-delimited DeptEvent JSON goes to stdout (the cockpit's
  * run-a-loop route relays it); all human text goes to stderr.
@@ -19,8 +22,11 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { defaultArtifactsRoot } from '@departments/artifacts';
 import { FakeCmaRuntime } from '@departments/agent-runtime';
+import { DEFAULT_GATE_THRESHOLDS, type GateThresholdConfig } from '@departments/rubrics';
+import { RUBRIC_CATEGORIES, type Alert } from '@departments/shared';
 import type { DeptEvent } from '@departments/events';
 import { runLoopLocally, runTreeLocally, type RunTreeResult } from './local-driver.js';
+import type { LoopSpec } from './engine.js';
 import type { RollupNode } from './rollup.js';
 import { ManualStepGate } from './step-gate.js';
 import { autoApproveToolGate, denyToolGate, ManualToolGate, type ToolGate } from './tool-gate.js';
@@ -46,9 +52,32 @@ async function main(): Promise<void> {
   //   lines `tool:allow|tool:deny` resolve an always_ask tool confirmation;
   //   lines `spawn:allow|spawn:deny` resolve a child-spawn request; bare newline = step.
   const approvals = args.includes('--approvals');
+  // Phase 5 demos: --gate-strict <N> tightens every gate's pass floor to N/100 (trips
+  // the gate barrier + drops health); --fable runs a Fable-5 executor (gated unless
+  // --fable-approve); --alerts prints raised alerts to stderr.
+  const gateStrict = flag(args, '--gate-strict');
+  const useFable = args.includes('--fable');
+  const fableApproved = args.includes('--fable-approve');
+  const showAlerts = args.includes('--alerts') || gateStrict !== undefined || useFable;
 
   const out = (s: string) => process.stdout.write(s);
   const err = (s: string) => process.stderr.write(s);
+
+  const gateConfig: GateThresholdConfig | undefined = gateStrict
+    ? (Object.fromEntries(
+        RUBRIC_CATEGORIES.map((c) => [c, { minScore: Number(gateStrict), required: true }]),
+      ) as GateThresholdConfig)
+    : undefined;
+  const roles: LoopSpec['roles'] | undefined = useFable
+    ? {
+        planner: { modelId: 'claude-opus-4-8', effort: 'high' },
+        executor: { modelId: 'claude-fable-5', effort: 'xhigh' },
+        reviewer: { modelId: 'claude-opus-4-8', effort: 'high' },
+        docs: { modelId: 'claude-sonnet-4-6', effort: 'medium' },
+      }
+    : undefined;
+  const alerts: Alert[] = [];
+  const alertSink = showAlerts ? (a: Alert) => alerts.push(a) : undefined;
 
   const onEvent = stream ? (e: DeptEvent) => out(`${JSON.stringify(e)}\n`) : undefined;
 
@@ -128,6 +157,10 @@ async function main(): Promise<void> {
     stepGate,
     runtime,
     toolGate,
+    roles,
+    gateConfig,
+    fableApproved,
+    alerts: alertSink,
     orgBudgetCapUsd: orgCap ? Number(orgCap) : undefined,
     memoryDir: join(defaultArtifactsRoot(), '..', 'memory'),
   });
@@ -151,6 +184,10 @@ async function main(): Promise<void> {
     );
   }
   err(`health=${health}%${noProgressPaused ? ' · PAUSED (no-progress)' : ''}\n`);
+  if (showAlerts) {
+    err(alerts.length === 0 ? 'alerts: none\n' : `alerts (${alerts.length}):\n`);
+    for (const a of alerts) err(`  [${a.severity}] ${a.kind} — ${a.message}\n`);
+  }
 
   for (const file of ['HANDOFF.md', 'REPORT.md']) {
     try {

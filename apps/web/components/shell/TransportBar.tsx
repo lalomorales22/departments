@@ -4,6 +4,7 @@ import { Camera, Pause, Play, StepForward, type LucideIcon } from 'lucide-react'
 import { useCockpit } from '@/lib/store';
 import { useRealtime } from '@/lib/realtime';
 import { useRunMode, useRunStatus } from '@/lib/live';
+import { useCan } from '@/lib/rbac';
 import { cn } from '@/lib/cn';
 
 /** A single square hairline transport button. */
@@ -63,6 +64,12 @@ export function TransportBar() {
   const setMode = useRealtime((s) => s.setMode);
   const runStatus = useRunStatus(loopId);
   const mode = useRunMode(loopId);
+  // Capability gating (RBAC): Viewer is read-only; Operator can run/step; Commander
+  // also holds pause (the kill switch). The gateway enforces the same matrix server-side.
+  const canRun = useCan('loop.run');
+  const canPause = useCan('loop.pause');
+  const canStepCap = useCan('loop.step');
+  const canShot = useCan('artifact.screenshot');
 
   const running = runStatus === 'running';
   const stepMode = mode === 'step';
@@ -72,27 +79,38 @@ export function TransportBar() {
     <div className="flex items-center gap-1">
       <TransportButton
         icon={Play}
-        label="Run one cycle"
+        label={canRun ? 'Run one cycle' : 'Run one cycle — requires Operator or higher'}
         onClick={() => void runLoop(loopId)}
         active={running}
-        disabled={running}
+        disabled={running || !canRun}
         activeAccent="var(--accent-green)"
       />
       <TransportButton
         icon={Pause}
-        label={stepMode ? 'Manual stepping (click to resume auto)' : 'Pause: switch to manual single-step'}
+        label={
+          !canPause
+            ? 'Manual stepping — requires Commander'
+            : stepMode
+              ? 'Manual stepping (click to resume auto)'
+              : 'Pause: switch to manual single-step'
+        }
         onClick={() => setMode(loopId, stepMode ? 'auto' : 'step')}
         active={stepMode}
+        disabled={!canPause}
         activeAccent="var(--accent-amber)"
       />
       <TransportButton
         icon={StepForward}
-        label="Advance one phase"
+        label={canStepCap ? 'Advance one phase' : 'Advance one phase — requires Operator or higher'}
         onClick={() => void step(loopId)}
-        disabled={!canStep}
+        disabled={!canStep || !canStepCap}
       />
       <span className="mx-1 h-4 w-px bg-hairline" aria-hidden />
-      <TransportButton icon={Camera} label="Screenshot (Phase 5)" disabled />
+      <TransportButton
+        icon={Camera}
+        label={canShot ? 'Screenshot the workspace (Phase 5 — stub)' : 'Screenshot — requires Operator or higher'}
+        disabled
+      />
     </div>
   );
 }

@@ -11,3 +11,17 @@ export { GATE_CRITERIA, RubricLibrary } from './rubrics';
 export type { RubricCriteriaProvider } from './rubrics';
 export { gradeSignals } from './grade';
 export type { GateResult, GradeSignals } from './grade';
+export {
+  DEFAULT_GATE_MIN_SCORE,
+  DEFAULT_GATE_THRESHOLDS,
+  HEALTH_WINDOW,
+  HealthController,
+  PHASE_GATES,
+  clearsThreshold,
+  enforceBoundary,
+  gateOutcomesFromHeuristic,
+  gatePassRate,
+  gatesForBoundary,
+  rollingHealth,
+} from './gates';
+export type { GateEnforcement, GateOutcome, GateThreshold, GateThresholdConfig } from './gates';

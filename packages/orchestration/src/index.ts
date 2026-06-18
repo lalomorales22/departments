@@ -22,4 +22,5 @@ export * from './cadence.js';
 export * from './spawn.js';
 export * from './rollup.js';
 export * from './ceo.js';
+export * from './cleanup.js';
 // `./cli` is a runnable entry (see package.json exports), not re-exported here.

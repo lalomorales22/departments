@@ -1,5 +1,6 @@
 import { Controller, Get } from '@nestjs/common';
 import { EVENT_PROTOCOL_VERSION } from '@departments/events';
+import { RequireCapability } from './auth/rbac.js';
 
 /**
  * STUB controller. Phase 1 exposes only a liveness probe and a hollow
@@ -31,6 +32,7 @@ export class AppController {
    * For now it returns [] so the contract (GET /loops -> Loop[]) exists.
    */
   @Get('loops')
+  @RequireCapability('loop.view')
   loops(): [] {
     return [];
   }

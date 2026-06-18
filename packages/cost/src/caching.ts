@@ -116,3 +116,84 @@ export function freezePrefix<T>(prefix: T): T {
 export function assertCacheHit(usage: TokenUsage): boolean {
   return usage.cacheReadInputTokens > 0;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cache audit (Phase 5) — alert on ~0 reads AND on mid-life degradation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Fraction of total input below which a tick is "effectively cold" — at or under
+ * this, the cached prefix is not paying off and the #1 lever is (near) disabled.
+ */
+export const CACHE_COLD_RATIO = 0.05 as const;
+
+/**
+ * Fraction of total input at or above which a tick counts as "warm" — used as the
+ * baseline a later cold tick is compared against to detect mid-life degradation.
+ */
+export const CACHE_WARM_RATIO = 0.5 as const;
+
+/**
+ * Fraction of a call's *input* tokens served from cache:
+ * `cacheRead / (input + cacheRead + cacheCreation)`. Output tokens are excluded —
+ * caching is a prompt(input)-prefix lever. Returns 0 when there is no input at all.
+ */
+export function cacheReadRatio(usage: TokenUsage): number {
+  const totalInput =
+    usage.inputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens;
+  return totalInput > 0 ? usage.cacheReadInputTokens / totalInput : 0;
+}
+
+/** The result of auditing one tick's cache efficacy. */
+export interface CacheAudit {
+  /** `cache_read_input_tokens > 0` this call. */
+  hit: boolean;
+  /** Fraction of input served from cache (0–1). */
+  readRatio: number;
+  /** At/under {@link CACHE_COLD_RATIO} — the cache is not paying off this tick. */
+  cold: boolean;
+  /**
+   * MID-LIFE DEGRADATION: a prior tick of the same loop was warm but this one
+   * collapsed to cold. This is the dangerous case the Phase 5 audit adds over the
+   * Phase 2 "is it ever warm" check — a prompt/tool change via continue-as-new can
+   * silently kill caching after the loop was already warm. Only set when a warm prior
+   * ratio is supplied (the first/cold-start tick is expected cold, not degraded).
+   */
+  degraded: boolean;
+}
+
+/**
+ * Audit one tick's cache efficacy. Pass the loop's PRIOR warm read-ratio to detect
+ * mid-life degradation; omit it on the first tick (cold start is expected, not a
+ * regression).
+ */
+export function auditCacheHit(usage: TokenUsage, priorReadRatio?: number): CacheAudit {
+  const readRatio = cacheReadRatio(usage);
+  const cold = readRatio <= CACHE_COLD_RATIO;
+  const degraded =
+    priorReadRatio !== undefined && priorReadRatio >= CACHE_WARM_RATIO && cold;
+  return { hit: usage.cacheReadInputTokens > 0, readRatio, cold, degraded };
+}
+
+/**
+ * Rolling per-loop cache auditor: remembers the last *warm* read-ratio per loop so a
+ * later cold tick is flagged as degradation rather than an expected cold start. The
+ * engine records every tick here and surfaces a WARN/alert when `degraded` is true.
+ */
+export class CacheAuditor {
+  /** Last observed warm read-ratio per loop (only warm ticks update the baseline). */
+  private readonly warmBaseline = new Map<string, number>();
+
+  /** Audit a tick for a loop and update its warm baseline. */
+  record(loopId: string, usage: TokenUsage): CacheAudit {
+    const prior = this.warmBaseline.get(loopId);
+    const audit = auditCacheHit(usage, prior);
+    if (audit.readRatio >= CACHE_WARM_RATIO) this.warmBaseline.set(loopId, audit.readRatio);
+    return audit;
+  }
+
+  /** The remembered warm baseline for a loop, if any (for dashboards/tests). */
+  baselineFor(loopId: string): number | undefined {
+    return this.warmBaseline.get(loopId);
+  }
+}

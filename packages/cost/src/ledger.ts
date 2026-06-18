@@ -123,6 +123,48 @@ export function batchCostOfUsage(usage: ModelUsage, modelId: string): number {
   return costOfUsage(usage, modelId) * BATCH_DISCOUNT_MULTIPLIER;
 }
 
+/** The synchronous vs batch cost of a call and the USD saved by batching it. */
+export interface BatchSavings {
+  syncCostUsd: number;
+  batchCostUsd: number;
+  savingUsd: number;
+}
+
+/**
+ * Quantify the Batch-API saving for one call (cost lever #3). The CEO sweep + bulk
+ * worker classify/lint/summarize go through Batch; the dashboard shows this so the
+ * 50% lever is *proven*, not asserted.
+ */
+export function batchSavings(usage: ModelUsage, modelId: string): BatchSavings {
+  const syncCostUsd = costOfUsage(usage, modelId);
+  const batchCostUsd = syncCostUsd * BATCH_DISCOUNT_MULTIPLIER;
+  return { syncCostUsd, batchCostUsd, savingUsd: syncCostUsd - batchCostUsd };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fable-5 cost-approval gate (Phase 5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The Fable-5 path is RESERVED for quarterly strategy / greenfield work and is gated
+ * behind explicit cost approval — its blended price ($10 in / $50 out) is 2× Opus, so
+ * it is never selected silently. The engine downgrades an UNAPPROVED Fable role to Opus
+ * and emits `fable-approval-required` so the Commander can approve the spend; once
+ * approved, the role runs on Fable. The gate is membership-based (Fable is gated,
+ * period), not a soft cost threshold — the projected cost is shown as the reason.
+ */
+export function requiresFableApproval(modelId: string): boolean {
+  return modelId === FABLE_MODEL_ID;
+}
+
+/**
+ * Projected USD for one full (five-phase) cycle on a model, for the Fable approval
+ * prompt / dashboard. Uses the conservative {@link NOMINAL_TICK_USAGE} per phase.
+ */
+export function projectedCycleUsd(modelId: string, phases = 5): number {
+  return estimateCallCostUsd(modelId) * phases;
+}
+
 /**
  * A representative single-tick usage, used ONLY to *project* the marginal cost of
  * one more model call (the escalation headroom guard, below). It is intentionally
@@ -417,4 +459,62 @@ export class BudgetLedger {
     const spentUsd = this.store.loopsForOrg(orgId).reduce((sum, row) => sum + row.spentUsd, 0);
     return Math.max(0, caps.hardCapUsd - spentUsd);
   }
+
+  /**
+   * The per-org budget DASHBOARD report (Phase 5): org spend + cap state, fraction of
+   * the hard cap used, and a per-loop breakdown (each loop's spend + its share of org
+   * spend + its own cap state), sorted biggest-spender-first. Feeds the cockpit's
+   * per-org budget dashboard and the COST_GOVERNANCE runbook. Read-only.
+   */
+  orgReport(orgId: string): OrgBudgetReport {
+    const org = this.orgStatus(orgId);
+    const rows = this.store.loopsForOrg(orgId);
+    const loops: OrgBudgetReportLoop[] = rows
+      .map((row) => ({
+        loopId: row.loopId,
+        spentUsd: row.spentUsd,
+        hardCapUsd: row.hardCapUsd,
+        state: resolveState(row.spentUsd, row.softCapUsd, row.hardCapUsd),
+        pctOfOrgSpend: org.spentUsd > 0 ? row.spentUsd / org.spentUsd : 0,
+      }))
+      .sort((a, b) => b.spentUsd - a.spentUsd);
+    // Fraction of the hard cap used (0 when uncapped — distinct from "no spend").
+    const utilization = org.hardCapUsd > 0 ? org.spentUsd / org.hardCapUsd : 0;
+    return {
+      orgId,
+      spentUsd: org.spentUsd,
+      softCapUsd: org.softCapUsd,
+      hardCapUsd: org.hardCapUsd,
+      state: org.state,
+      capped: org.hardCapUsd > 0,
+      utilization,
+      headroomUsd: this.orgHeadroomUsd(orgId),
+      loops,
+    };
+  }
+}
+
+/** One loop's row in the per-org budget report. */
+export interface OrgBudgetReportLoop {
+  loopId: string;
+  spentUsd: number;
+  hardCapUsd: number;
+  state: BudgetState;
+  /** This loop's share of the org's total spend (0–1). */
+  pctOfOrgSpend: number;
+}
+
+/** The per-org budget dashboard report (org rollup + per-loop breakdown). */
+export interface OrgBudgetReport {
+  orgId: string;
+  spentUsd: number;
+  softCapUsd: number;
+  hardCapUsd: number;
+  state: BudgetState;
+  /** False when the org has no registered hard cap ("no limit", not "infinite headroom"). */
+  capped: boolean;
+  /** Fraction of the hard cap used (0 when uncapped). */
+  utilization: number;
+  headroomUsd: number;
+  loops: OrgBudgetReportLoop[];
 }

@@ -8,3 +8,5 @@
 export * from './enums';
 export * from './types';
 export * from './pipeline';
+export * from './rbac';
+export * from './alerts';
