@@ -11,18 +11,24 @@ import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   MODEL_TIERS,
+  type Effort,
   type EventSink,
   type LoopAgentRuntime,
   type LoopSession,
   type ModelId,
   type OutcomeVerdict,
   type PhaseResult,
+  type ToolConfirm,
+  type ToolConfirmInput,
+  type ToolConfirmResult,
 } from '@departments/agent-runtime';
+import { stricterAction } from '@departments/cost';
 import type { AgentRole, CyclePhase, Phase } from '@departments/shared';
 import type { DeptEvent } from '@departments/events';
 import {
   type ArtifactPort,
   type ArtifactSnapshot,
+  type CapAction,
   type Clock,
   type LedgerPort,
   type MemoryPort,
@@ -32,6 +38,9 @@ import {
 } from './ports.js';
 import { isCleanPass, routeEvaluate } from './state-machine.js';
 import { autoStepGate, type StepGate } from './step-gate.js';
+import { EscalationController } from './escalation.js';
+import { isIrreversibleTool, type ToolGate } from './tool-gate.js';
+import type { ConcurrencySemaphore } from './semaphore.js';
 
 export interface RoleModel {
   modelId: ModelId;
@@ -70,6 +79,24 @@ export interface EngineDeps {
    * phase (drives the cockpit's AUTO↔STEP toggle). Defaults to {@link autoStepGate}.
    */
   stepGate?: StepGate;
+  /**
+   * Data-driven capability escalation, threaded across cycles by the composition root
+   * (so decay persists). When absent a fresh per-cycle controller is used. Escalation
+   * is always SUBORDINATE to the budget caps — see {@link EscalationController}.
+   */
+  escalation?: EscalationController;
+  /**
+   * `always_ask` confirmation gate for irreversible tools (deploy/send/spend/delete).
+   * When present the engine routes such tool uses through it before they run; absent ⇒
+   * tools are not gated (auto-approve). See {@link ToolGate}.
+   */
+  toolGate?: ToolGate;
+  /**
+   * Per-org concurrency semaphore (a runaway guard). When present the engine acquires a
+   * slot before each model session and releases it after, so concurrently-running loops
+   * in an org share a bounded session pool. Absent ⇒ unbounded (single-loop default).
+   */
+  semaphore?: ConcurrencySemaphore;
 }
 
 export interface CycleResult {
@@ -83,6 +110,10 @@ export interface CycleResult {
   snapshots: ArtifactSnapshot[];
   paused: boolean;
   downgraded: boolean;
+  /** True when a rework ran at an escalated capability tier (subordinate to caps). */
+  escalated: boolean;
+  /** True when an irreversible tool was denied by the `always_ask` gate this cycle. */
+  toolDenied: boolean;
   costUsd: number;
   cacheReadTokens: number;
 }
@@ -101,6 +132,7 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
   const clock = deps.clock ?? systemClock;
   const stepGate = deps.stepGate ?? autoStepGate;
   const { loopId } = spec;
+  const orgKey = spec.orgId ?? 'org-local';
   const runId = `run-${loopId}-c${spec.cycle}`;
   const { workspaceDir } = await deps.artifacts.provision(loopId);
   const systemContext = buildSystemContext(spec);
@@ -136,6 +168,19 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
   let reworks = 0;
   let paused = false;
   let downgraded = false;
+  let escalated = false;
+  let toolDenied = false;
+  const escalation = deps.escalation ?? new EscalationController();
+
+  /** Stricter of the loop and org cap actions — the org-wide cap precedence. */
+  const capActionNow = (): CapAction =>
+    stricterAction(deps.ledger.checkCap(loopId), spec.orgId ? deps.ledger.checkOrgCap(spec.orgId) : 'ok');
+  /** Min remaining hard-cap headroom across the loop and the org rollup. */
+  const headroomNow = (): number =>
+    Math.min(
+      deps.ledger.headroomUsd(loopId),
+      spec.orgId ? deps.ledger.orgHeadroomUsd(spec.orgId) : Number.POSITIVE_INFINITY,
+    );
 
   const roleOf = (role: keyof LoopSpec['roles']): RoleModel => {
     const rm = spec.roles[role] ?? spec.roles.executor;
@@ -167,18 +212,62 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
     const { costUsd } = deps.ledger.recordUsage({ orgId: spec.orgId, loopId, runId }, usage, modelId);
     totalCost += costUsd;
     cacheReadTokens += usage.cacheReadInputTokens;
-    const cap = deps.ledger.checkCap(loopId);
+    // Take the STRICTER of the loop cap and the org-wide rollup cap: a tree of loops
+    // each under its own cap can still pause when their combined spend breaches the
+    // org hard cap (the Phase 4 org-wide cap). Both override escalation.
+    const loopCap = deps.ledger.checkCap(loopId);
+    const orgCap: CapAction = spec.orgId ? deps.ledger.checkOrgCap(spec.orgId) : 'ok';
+    const cap = stricterAction(loopCap, orgCap);
+    const orgDriven = cap !== 'ok' && cap === orgCap && cap !== loopCap;
+    const scope = orgDriven ? 'org-wide ' : '';
     if (cap === 'pause') {
       paused = true;
-      log('error', `hard budget cap reached — pausing loop (precedence: caps override escalation).`, 'guardrail');
+      log('error', `${scope}hard budget cap reached — pausing loop (precedence: caps override escalation).`, 'guardrail');
       emit({ id: `${runId}-pause`, seq: 0, loopId, runId, ts: clock.now(), kind: 'status', payload: { scope: 'loop', targetId: loopId, loopStatus: 'paused' } });
       return { costUsd, pauseNow: true };
     }
     if (cap === 'downgrade' && !downgraded) {
       downgraded = true;
-      log('warn', `soft budget cap reached — downgrading effort for the rest of the cycle.`, 'guardrail');
+      log('warn', `${scope}soft budget cap reached — downgrading effort for the rest of the cycle.`, 'guardrail');
     }
     return { costUsd, pauseNow: false };
+  }
+
+  /**
+   * Build the per-phase `always_ask` confirmation hook. Reversible tools resolve
+   * instantly; an irreversible one is logged, emitted as a `tool_use` start, routed
+   * through the gate, and the verdict emitted back (a denial reroutes the agent's
+   * work without pausing the loop — caps + human gates remain the only loop halts).
+   */
+  function confirmFor(phase: CyclePhase): ToolConfirm | undefined {
+    const gate = deps.toolGate;
+    if (!gate) return undefined;
+    let toolEvt = 0;
+    return async (req: ToolConfirmInput): Promise<ToolConfirmResult> => {
+      if (!isIrreversibleTool(req.tool)) return { allow: true };
+      const eid = `${runId}-${phase}-tool-${toolEvt++}`;
+      log('warn', `always_ask: "${req.tool}" is irreversible — awaiting confirmation (${req.summary}).`, 'guardrail');
+      emit({
+        id: `${eid}-start`, seq: 0, loopId, runId, ts: clock.now(), kind: 'tool_use',
+        payload: { agentId: req.agentId, tool: req.tool, phase: 'start', summary: `always_ask · ${req.summary}`, input: req.input },
+      });
+      const decision = await gate.confirm({ loopId, runId, phase, tool: req.tool, summary: req.summary, input: req.input, agentId: req.agentId });
+      if (decision.allow) {
+        log('info', `always_ask: "${req.tool}" approved by Commander.`, 'guardrail');
+        emit({
+          id: `${eid}-ok`, seq: 0, loopId, runId, ts: clock.now(), kind: 'tool_use',
+          payload: { agentId: req.agentId, tool: req.tool, phase: 'result', summary: `approved · ${req.summary}` },
+        });
+      } else {
+        toolDenied = true;
+        log('warn', `always_ask: "${req.tool}" DENIED — ${decision.reason ?? 'no reason given'} (rerouting work).`, 'guardrail');
+        emit({
+          id: `${eid}-deny`, seq: 0, loopId, runId, ts: clock.now(), kind: 'tool_use',
+          payload: { agentId: req.agentId, tool: req.tool, phase: 'error', summary: `denied · ${decision.reason ?? 'no reason'}` },
+        });
+      }
+      return decision;
+    };
   }
 
   async function runPhase(
@@ -194,23 +283,49 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
       log('info', `awaiting manual step → ${phase.toUpperCase()}${iteration > 0 ? ` (rework ${iteration})` : ''}`, 'step');
       await stepGate.beforePhase({ loopId, runId, cycle: spec.cycle, phase, iteration });
     }
-    const model = roleOf(roleKey);
-    const session = await startRole(role, model);
-    const startedAt = clock.now();
-    const result = await deps.runtime.executePhase(session, { phase, instruction, context, iteration }, emit);
-    const snap = await deps.artifacts.snapshot(loopId, {
-      runId,
-      phase,
-      message: `${loopId}:${runId}:${phase}${iteration > 0 ? `:rework${iteration}` : ''}`,
-    });
-    snapshots.push(snap);
-    phasesRun.push(phase);
-    const { costUsd, pauseNow } = account(result.usage, model.modelId);
-    void deps.persistence.recordRun({
-      loopId, runId, phase, tickNo: tickNo++, cycle: spec.cycle, iteration,
-      costUsd, usage: result.usage, startedAt, endedAt: clock.now(),
-    });
-    await deps.runtime.endSession(session);
+    let model = roleOf(roleKey);
+    // Data-driven escalation: a rework executor may bump capability to break out of a
+    // rut — but only when the cap is `ok` and the bump fits the hard-cap headroom
+    // (caps + downgrade win; see EscalationController). Never on the first pass.
+    if (roleKey === 'executor' && iteration > 0) {
+      const prop = escalation.resolve(
+        { modelId: model.modelId, effort: (model.effort ?? null) as Effort | null },
+        { capAction: capActionNow(), headroomUsd: headroomNow() },
+      );
+      if (prop.level > 0) {
+        escalated = true;
+        model = { modelId: prop.modelId, effort: prop.effort };
+        log('info', `escalation: rework ${iteration} → ${prop.modelId}${prop.effort ? ` (${prop.effort})` : ''} (level ${prop.level}).`, 'guardrail');
+      } else if (prop.refused) {
+        log('warn', `escalation refused at rework ${iteration} — budget cap/headroom takes precedence (caps override escalation).`, 'guardrail');
+      }
+    }
+    // Concurrency semaphore: hold a per-org session slot for the lifetime of this
+    // session (acquired after any manual-step wait, released in `finally`).
+    const release = deps.semaphore ? await deps.semaphore.acquire(orgKey) : null;
+    let pauseNow = false;
+    let result: PhaseResult;
+    try {
+      const session = await startRole(role, model);
+      const startedAt = clock.now();
+      result = await deps.runtime.executePhase(session, { phase, instruction, context, iteration, confirm: confirmFor(phase) }, emit);
+      const snap = await deps.artifacts.snapshot(loopId, {
+        runId,
+        phase,
+        message: `${loopId}:${runId}:${phase}${iteration > 0 ? `:rework${iteration}` : ''}`,
+      });
+      snapshots.push(snap);
+      phasesRun.push(phase);
+      const acc = account(result.usage, model.modelId);
+      pauseNow = acc.pauseNow;
+      void deps.persistence.recordRun({
+        loopId, runId, phase, tickNo: tickNo++, cycle: spec.cycle, iteration,
+        costUsd: acc.costUsd, usage: result.usage, startedAt, endedAt: clock.now(),
+      });
+      await deps.runtime.endSession(session);
+    } finally {
+      await release?.();
+    }
     if (pauseNow) return null;
     return result;
   }
@@ -222,19 +337,27 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
       await stepGate.beforePhase({ loopId, runId, cycle: spec.cycle, phase: 'evaluate', iteration });
     }
     const model = roleOf('reviewer');
-    const session = await startRole('reviewer', model);
-    const startedAt = clock.now();
-    const verdict = await deps.runtime.evaluate(
-      session,
-      { rubric: deps.rubrics.criteria(loopId), maxIterations: spec.maxIterations, iteration, targetSummary, workspaceDir },
-      emit,
-    );
-    const { costUsd, pauseNow } = account(verdict.usage, model.modelId);
-    void deps.persistence.recordRun({
-      loopId, runId, phase: 'evaluate', tickNo: tickNo++, cycle: spec.cycle, iteration,
-      costUsd, usage: verdict.usage, startedAt, endedAt: clock.now(),
-    });
-    await deps.runtime.endSession(session);
+    const release = deps.semaphore ? await deps.semaphore.acquire(orgKey) : null;
+    let pauseNow = false;
+    let verdict: OutcomeVerdict;
+    try {
+      const session = await startRole('reviewer', model);
+      const startedAt = clock.now();
+      verdict = await deps.runtime.evaluate(
+        session,
+        { rubric: deps.rubrics.criteria(loopId), maxIterations: spec.maxIterations, iteration, targetSummary, workspaceDir },
+        emit,
+      );
+      const acc = account(verdict.usage, model.modelId);
+      pauseNow = acc.pauseNow;
+      void deps.persistence.recordRun({
+        loopId, runId, phase: 'evaluate', tickNo: tickNo++, cycle: spec.cycle, iteration,
+        costUsd: acc.costUsd, usage: verdict.usage, startedAt, endedAt: clock.now(),
+      });
+      await deps.runtime.endSession(session);
+    } finally {
+      await release?.();
+    }
     if (pauseNow) return null;
     return verdict;
   }
@@ -254,12 +377,18 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
   while (verdict && !paused && routeEvaluate(verdict.result, iteration, spec.maxIterations) === 'rework') {
     iteration += 1;
     reworks += 1;
+    // Repeated grader failure bumps the capability level for the rework executor
+    // (applied subordinate to caps inside runPhase).
+    escalation.recordFailure();
     const failing = verdict.gates.filter((g) => !g.passed).map((g) => g.category).join(', ');
     await runPhase('executor', 'executor', 'execute', `Rework to satisfy failing gate(s): ${failing}.`, planContext, iteration);
     verdict = await runEvaluate(iteration, `rework pass ${iteration} for ${failing}`);
   }
 
-  if (verdict && !isCleanPass(verdict.result)) {
+  if (verdict && isCleanPass(verdict.result)) {
+    // A clean pass decays the escalation one tier (data-driven decay).
+    escalation.recordCleanPass();
+  } else if (verdict) {
     log('warn', `gates not fully satisfied after ${iteration} rework(s): ${verdict.result}.`, 'grader');
   }
 
@@ -301,6 +430,8 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
     snapshots,
     paused,
     downgraded,
+    escalated,
+    toolDenied,
     costUsd: totalCost,
     cacheReadTokens,
   };

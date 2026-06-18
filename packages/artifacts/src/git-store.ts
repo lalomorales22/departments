@@ -50,6 +50,8 @@ export interface ArtifactPortShape {
   provision(loopId: string): Promise<{ workspaceDir: string }>;
   seedIfEmpty(loopId: string, seeds: Record<string, string>): Promise<void>;
   read(loopId: string, rel: string): Promise<string | null>;
+  /** Write (overwrite) an artifact's text — CEO set_objective + ⌘I import use this. */
+  write(loopId: string, rel: string, content: string): Promise<void>;
   snapshot(loopId: string, meta: SnapshotMeta): Promise<ArtifactSnapshot>;
 }
 
@@ -159,6 +161,22 @@ export class GitArtifactStore implements ArtifactPortShape {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Write (overwrite) an artifact's text into the loop's working tree, creating parent
+   * dirs as needed. The relative path is resolved and confirmed to stay inside the
+   * workspace (no `..`/absolute traversal). Does not commit — the next phase snapshot
+   * captures it (so a CEO-written STRATEGY.md is versioned with the cycle).
+   */
+  async write(loopId: string, rel: string, content: string): Promise<void> {
+    const workspaceDir = this.workspaceDir(loopId);
+    const abs = resolve(workspaceDir, rel);
+    if (abs !== workspaceDir && !abs.startsWith(workspaceDir + '/')) {
+      throw new Error(`refusing to write outside the loop workspace: ${rel}`);
+    }
+    await mkdir(dirname(abs), { recursive: true });
+    await writeFile(abs, content, 'utf8');
   }
 
   /** Commit the working tree, tag it, and return the snapshot. */

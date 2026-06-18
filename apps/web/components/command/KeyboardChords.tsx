@@ -68,10 +68,14 @@ export function KeyboardChords() {
             s.setMapFocused(true);
             scrollTo('activity-map');
             return;
+          case 'i':
+            // Import Artifact — jump to ARTIFACTS and open the import modal.
+            e.preventDefault();
+            s.openImport();
+            return;
           case 'n':
           case 'a':
           case 't':
-          case 'i':
             e.preventDefault();
             s.setCommandOpen(true);
             return;

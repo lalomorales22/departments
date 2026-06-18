@@ -45,6 +45,34 @@ export interface LoopSession {
   workspaceDir: string;
 }
 
+/**
+ * A request to use a tool that needs human-in-the-loop confirmation. The runtime
+ * raises this for an irreversible action (deploy/send/spend/delete); the ENGINE owns
+ * the `always_ask` policy + routing and answers with a {@link ToolConfirmResult}.
+ */
+export interface ToolConfirmInput {
+  /** Tool name the agent wants to use, e.g. 'github.deploy', 'email.send'. */
+  tool: string;
+  /** One-line human summary of the intended action. */
+  summary: string;
+  input?: Record<string, unknown>;
+  agentId?: string;
+}
+
+/** The engine's verdict on a {@link ToolConfirmInput}; a denial carries a reason. */
+export interface ToolConfirmResult {
+  allow: boolean;
+  /** Why it was denied — handed back so the agent can reroute work. */
+  reason?: string;
+}
+
+/**
+ * Callback a runtime may invoke before an irreversible tool use to obtain
+ * confirmation from the engine's `always_ask` gate. Reversible tools must NOT call
+ * it. Absent ⇒ the engine isn't gating tools (auto-approve, legacy behavior).
+ */
+export type ToolConfirm = (req: ToolConfirmInput) => Promise<ToolConfirmResult>;
+
 /** One phase turn. `iteration` > 0 means a rework pass inside IMPROVE. */
 export interface PhaseRequest {
   phase: CyclePhase;
@@ -53,6 +81,8 @@ export interface PhaseRequest {
   /** Prior HANDOFF + retrieved memory + relevant context for this turn. */
   context: string;
   iteration: number;
+  /** Engine-provided `always_ask` confirmation hook for irreversible tools (optional). */
+  confirm?: ToolConfirm;
 }
 
 export interface PhaseResult {

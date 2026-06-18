@@ -31,6 +31,8 @@ export interface ArtifactPort {
   seedIfEmpty(loopId: string, seeds: Record<string, string>): Promise<void>;
   /** Read an artifact's text, or null if absent. */
   read(loopId: string, rel: string): Promise<string | null>;
+  /** Write (overwrite) an artifact's text — CEO set_objective writes a child's STRATEGY.md. */
+  write(loopId: string, rel: string, content: string): Promise<void>;
   /** Commit the current working tree, tag it `loopId:runId:phase`, return the snapshot. */
   snapshot(loopId: string, meta: { runId: string; phase: Phase; message: string }): Promise<ArtifactSnapshot>;
 }
@@ -95,6 +97,17 @@ export interface LedgerPort {
   ): { costUsd: number };
   /** Current cap state for the loop (soft → downgrade, hard → pause). */
   checkCap(loopId: string): CapAction;
+  /**
+   * Current cap state for the ORG-wide rollup (sum of every loop's spend). The
+   * engine takes the STRICTER of this and {@link checkCap} — so a tree of loops
+   * each under its own cap can still pause when their COMBINED spend breaches the
+   * org hard cap (the Phase 4 org-wide cap). Returns `'ok'` when no org is scoped.
+   */
+  checkOrgCap(orgId: string): CapAction;
+  /** USD remaining before the loop's hard cap (`Infinity` if uncapped) — escalation guard. */
+  headroomUsd(loopId: string): number;
+  /** USD remaining before the org-wide hard cap (`Infinity` if uncapped) — escalation guard. */
+  orgHeadroomUsd(orgId: string): number;
 }
 
 // ── Clock (deterministic in tests) ────────────────────────────────────────────

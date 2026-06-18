@@ -15,6 +15,8 @@ packages/db/
 │   ├── 0001_init.sql       # enums + all tables + indexes (no pgvector dependency)
 │   ├── 0002_pgvector.sql   # CREATE EXTENSION vector; memory.embedding + ivfflat index
 │   ├── 0003_rls.sql        # ENABLE + FORCE RLS + per-org isolation policy on every tenant table
+│   ├── 0004_metric_unique.sql # UNIQUE(loop_id, key) for "latest metric" upserts
+│   ├── 0005_rollup.sql     # Phase 4: loop_tree + loop_rollup views (security_invoker) + org_health_daily matview
 │   └── 0100_seed.sql       # demo seed: South Bay IT Solutions org + marketing loop tree
 ├── test/
 │   └── rls.policy.test.md  # spec for the RLS CI gate (no live Postgres in P1)
@@ -103,3 +105,49 @@ the `ceo → marketing → {comedeez, southbayitsolutions}` loop tree, the canon
 **6 metric cards** (`bounce_rate` and `cac` have `good_direction = down`), **5
 artifacts**, and **5 memory rows**. All `created_at` values are current-era
 (**2026**). UUIDs are fixed for deterministic, idempotent FKs.
+
+## Phase 4 rollups & tree (`0005_rollup.sql`)
+
+The hierarchy/meta-loop read side. Three objects power the HIERARCHY panel and the
+ANALYTICS tab without recomputing tree walks in application code:
+
+- **`loop_tree`** (VIEW) — a recursive-CTE materialization of the loop tree. Per
+  loop: `id, org_id, parent_loop_id, root_loop_id, depth` (root = 0), `level`
+  (1..4), and `path` (the inclusive ancestor `uuid[]` from root → loop). Drives the
+  hierarchy panel.
+- **`loop_rollup`** (VIEW) — per-loop **subtree** aggregates (the loop itself + all
+  descendants): `rolled_health` (avg health), `rolled_spent_usd` and
+  `rolled_budget_usd` (sums), `descendant_count` (strict descendants), and
+  `worst_status` — the most attention-needing `loop_status` in the subtree, ranked
+  **error > paused > running > idle > stopped** via a CASE severity score.
+- **`org_health_daily`** (MATERIALIZED VIEW) — the ANALYTICS "aggregate health over
+  time" series: per `(org_id, day)` the `avg(metric.value)` where `key = 'health'`,
+  bucketed by `date_trunc('day', ts)`. A `UNIQUE (org_id, day)` index enables
+  `REFRESH MATERIALIZED VIEW CONCURRENTLY`. Refresh cadence: a **privileged**
+  scheduled job, **nightly** baseline (plus an extra refresh after large metric
+  backfills).
+
+### The `security_invoker` decision (tenant isolation across views)
+
+A regular Postgres view runs with its **definer's** rights and therefore **bypasses
+the querying role's RLS** by default — a scoped session reading `loop_tree` would
+otherwise see *every* org's loops. To preserve the multi-tenancy model
+(`0003_rls.sql`), `loop_tree` and `loop_rollup` are created
+**`WITH (security_invoker = true)`** (**PostgreSQL 15+**): the view body executes
+under the *caller's* permissions and RLS, so `loop_isolation` (and `metric_isolation`)
+apply transitively and the recursive walks never bleed across tenants. Both views
+also carry `org_id`. **Do not back-port below PG 15** — the option is unknown there
+and `CREATE VIEW` would error.
+
+A **materialized view cannot** be `security_invoker` and cannot have RLS enabled, so
+`org_health_daily` is **not** RLS-protected: it is refreshed by a privileged
+(BYPASSRLS) job and stores every org's daily health by design. Its tenant isolation
+is therefore an **app-level read-path requirement** — the ANALYTICS query **must**
+always filter `org_id = current_setting('app.current_org', true)::uuid`. This is
+documented in the matview's `COMMENT` and asserted in
+[`test/rls.policy.test.md`](./test/rls.policy.test.md) (§E for the views, §F for the
+matview).
+
+All `0005` statements are idempotent: `CREATE OR REPLACE VIEW` for the views,
+`DROP MATERIALIZED VIEW IF EXISTS` + `CREATE` for the matview (its column set may
+evolve), and `CREATE [UNIQUE] INDEX IF NOT EXISTS` for its indexes.

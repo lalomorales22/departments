@@ -11,7 +11,7 @@
 import { mkdir, appendFile, writeFile, readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import type { DeptEvent } from '@departments/events';
-import { RUBRIC_CATEGORIES, type RubricCategory, type TokenUsage } from '@departments/shared';
+import { RUBRIC_CATEGORIES, type CyclePhase, type RubricCategory, type TokenUsage } from '@departments/shared';
 import type {
   EvaluateRequest,
   EventSink,
@@ -50,6 +50,13 @@ export interface FakeRuntimeOptions {
    * false.
    */
   stall?: boolean;
+  /**
+   * Demo the `always_ask` gate: in the given phase (default `execute`, first pass) the
+   * agent attempts an IRREVERSIBLE tool and calls the engine-provided `confirm` hook.
+   * If the gate denies it, the agent reroutes; if it approves, the action runs. Off by
+   * default so existing cycles are unaffected.
+   */
+  irreversible?: { tool: string; summary: string; phase?: CyclePhase };
 }
 
 export class FakeCmaRuntime implements LoopAgentRuntime {
@@ -83,6 +90,23 @@ export class FakeCmaRuntime implements LoopAgentRuntime {
 
     emitE({ ...base('status'), kind: 'status', payload: { scope: 'loop', targetId: s.loopId, loopStatus: 'running', phase: req.phase } });
     emitE({ ...base('log'), kind: 'log', payload: { level: 'info', source: 'engine', message: `${req.phase.toUpperCase()} · cycle ${s.cycle}${req.iteration > 0 ? ` · rework #${req.iteration}` : ''} · session ${s.sessionId.slice(-8)}` } });
+
+    // always_ask demo: attempt an irreversible tool and route it through the engine's gate.
+    const irrev = this.opts.irreversible;
+    if (irrev && req.phase === (irrev.phase ?? 'execute') && req.iteration === 0 && req.confirm) {
+      const decision = await req.confirm({ tool: irrev.tool, summary: irrev.summary, agentId: `agt-${s.role}`, input: { loopId: s.loopId } });
+      emitE({
+        ...base('output'),
+        kind: 'output',
+        payload: {
+          agentId: `agt-${s.role}`,
+          text: decision.allow
+            ? `Confirmed — executed irreversible action "${irrev.tool}".`
+            : `Skipped "${irrev.tool}" (denied: ${decision.reason ?? 'no reason'}); rerouting to a reversible alternative.`,
+          streaming: false,
+        },
+      });
+    }
 
     const changed: string[] = [];
     let summary = '';

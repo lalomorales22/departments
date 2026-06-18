@@ -44,9 +44,11 @@ interface RealtimeState {
   /** Tear down the subscription for a loop. */
   disconnect: (loopId: string) => void;
   /** Fire one real engine run; events arrive over the live subscription. */
-  runLoop: (loopId: string, opts?: { mode?: RunMode; stall?: boolean; cycles?: number }) => Promise<void>;
+  runLoop: (loopId: string, opts?: { mode?: RunMode; stall?: boolean; cycles?: number; approvals?: boolean }) => Promise<void>;
   /** Advance a step-mode run by one phase. */
   step: (loopId: string) => Promise<void>;
+  /** Resolve a pending approval (always_ask tool confirmation or child-spawn request). */
+  decide: (loopId: string, kind: 'tool' | 'spawn', approve: boolean) => Promise<void>;
   /** Set the run mode (AUTO ↔ STEP) for the NEXT run. */
   setMode: (loopId: string, mode: RunMode) => void;
   /** Reset a loop's local live state (keeps the connection). */
@@ -192,6 +194,7 @@ export const useRealtime = create<RealtimeState>((set, get) => {
       set((s) => ({ runStatus: { ...s.runStatus, [loopId]: 'running' } }));
       const params = new URLSearchParams({ mode, cycles: String(opts?.cycles ?? 1) });
       if (opts?.stall) params.set('stall', '1');
+      if (opts?.approvals) params.set('approvals', '1');
       try {
         const res = await fetch(`/api/loops/${encodeURIComponent(loopId)}/run?${params}`, { method: 'POST' });
         if (!res.ok && res.status !== 409) throw new Error(`run failed: ${res.status}`);
@@ -213,6 +216,18 @@ export const useRealtime = create<RealtimeState>((set, get) => {
         await fetch(`/api/loops/${encodeURIComponent(loopId)}/step`, { method: 'POST' });
       } catch {
         /* a failed step is non-fatal; the engine simply stays paused */
+      }
+    },
+
+    decide: async (loopId, kind, approve) => {
+      try {
+        await fetch(`/api/loops/${encodeURIComponent(loopId)}/decide`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ kind, approve }),
+        });
+      } catch {
+        /* a failed decision is non-fatal; the engine stays paused awaiting another */
       }
     },
 

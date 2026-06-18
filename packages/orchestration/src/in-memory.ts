@@ -71,6 +71,11 @@ export function makeTempArtifacts(): ArtifactPort & { dir(): string } {
         return null;
       }
     },
+    async write(_loopId, rel, content) {
+      const abs = join(workspaceDir, rel);
+      await mkdir(dirname(abs), { recursive: true });
+      await writeFile(abs, content, 'utf8');
+    },
     async snapshot(_loopId, _meta): Promise<ArtifactSnapshot> {
       const cur = await scan(workspaceDir);
       const changedFiles: string[] = [];
@@ -116,12 +121,18 @@ const PRICES: Record<string, [number, number]> = {
   'claude-haiku-4-5': [1, 5],
 };
 
-export function makeLedger(opts: { hardCapUsd?: number; softFraction?: number } = {}): LedgerPort & {
-  spent(): number;
-} {
+export function makeLedger(
+  opts: { hardCapUsd?: number; softFraction?: number; orgHardCapUsd?: number } = {},
+): LedgerPort & { spent(): number } {
   const hard = opts.hardCapUsd ?? Number.POSITIVE_INFINITY;
+  const orgHard = opts.orgHardCapUsd ?? Number.POSITIVE_INFINITY;
   const softFraction = opts.softFraction ?? 0.8;
   let spent = 0;
+  const stateFor = (cap: number): CapAction => {
+    if (spent >= cap) return 'pause';
+    if (spent >= cap * softFraction) return 'downgrade';
+    return 'ok';
+  };
   return {
     spent: () => spent,
     recordUsage(_scope, usage: TokenUsage, modelId) {
@@ -132,11 +143,11 @@ export function makeLedger(opts: { hardCapUsd?: number; softFraction?: number } 
       spent += costUsd;
       return { costUsd };
     },
-    checkCap(): CapAction {
-      if (spent >= hard) return 'pause';
-      if (spent >= hard * softFraction) return 'downgrade';
-      return 'ok';
-    },
+    checkCap: () => stateFor(hard),
+    checkOrgCap: () => stateFor(orgHard),
+    headroomUsd: () => (Number.isFinite(hard) ? Math.max(0, hard - spent) : Number.POSITIVE_INFINITY),
+    orgHeadroomUsd: () =>
+      Number.isFinite(orgHard) ? Math.max(0, orgHard - spent) : Number.POSITIVE_INFINITY,
   };
 }
 

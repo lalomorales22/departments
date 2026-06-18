@@ -5,9 +5,47 @@ import { getAgents, getLoop } from '@/lib/fixtures';
 import { accentVar, rubricAccent } from '@/lib/status-theme';
 import { cn } from '@/lib/cn';
 import { SectionLabel } from '@/components/atoms';
+import { useCockpit } from '@/lib/store';
 
 /** Default gate pass threshold (presentational; the engine owns the real value). */
 const GATE_THRESHOLD = 80;
+
+/** Cadence options the schedule editor offers (mirrors the engine's cadence floors). */
+const CADENCE_OPTIONS = ['continuous', 'hourly', 'daily', 'nightly', 'weekly', 'manual', 'on-demand'];
+
+/** An inline editable schedule control — optimistic store edit + a PATCH to the loop. */
+function CadenceEditor({ loopId, fallback }: { loopId: string; fallback: string }) {
+  const override = useCockpit((s) => s.loopCadence[loopId]);
+  const setLoopCadence = useCockpit((s) => s.setLoopCadence);
+  const value = override ?? fallback;
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-hairline/60 py-1.5">
+      <span className="text-xs text-muted">Schedule</span>
+      <select
+        value={value}
+        aria-label="Loop schedule / cadence"
+        onChange={(e) => {
+          const next = e.target.value;
+          setLoopCadence(loopId, next);
+          void fetch(`/api/loops/${encodeURIComponent(loopId)}`, {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ cadence: next }),
+          }).catch(() => {
+            /* optimistic — the durable write is the engine/DB path */
+          });
+        }}
+        className="tabular rounded-sm border border-hairline bg-bg-deep px-1.5 py-0.5 text-xs uppercase text-text focus-ring"
+      >
+        {CADENCE_OPTIONS.map((c) => (
+          <option key={c} value={c}>
+            {c.toUpperCase()}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
 
 /** Format a USD amount with thousands separators (machine-emitted → mono). */
 function usd(amount: number): string {
@@ -63,7 +101,7 @@ export function InspectorConfig({ loopId }: { loopId: string }) {
     <div className="animate-fade-in">
       {/* CADENCE */}
       <Block label="Cadence">
-        <ConfigRow k="Schedule" v={(loop?.cadence ?? 'manual').toUpperCase()} />
+        <CadenceEditor loopId={loopId} fallback={loop?.cadence ?? 'manual'} />
         <ConfigRow k="Cycle Count" v={String(loop?.cycleCount ?? 0)} />
         <ConfigRow k="Status" v={(loop?.status ?? 'idle').toUpperCase()} />
       </Block>

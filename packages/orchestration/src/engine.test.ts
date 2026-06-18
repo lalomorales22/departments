@@ -60,6 +60,15 @@ function makeLedgerPausingOnCall(n: number): LedgerPort {
     checkCap() {
       return calls >= n ? 'pause' : 'ok';
     },
+    checkOrgCap() {
+      return 'ok';
+    },
+    headroomUsd() {
+      return Number.POSITIVE_INFINITY;
+    },
+    orgHeadroomUsd() {
+      return Number.POSITIVE_INFINITY;
+    },
   };
 }
 

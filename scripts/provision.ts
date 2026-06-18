@@ -48,6 +48,26 @@ const KNOWN_MODELS: readonly ModelId[] = [
 /** The known effort rungs — mirrors `Effort` from the runtime. */
 const KNOWN_EFFORTS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
+/**
+ * The known cadence/schedule tiers — mirrors `CADENCE_LABELS` in
+ * `@departments/orchestration`'s `cadence.ts` VERBATIM. Inlined (not imported) to keep
+ * this script dependency-light: it must not gain an orchestration dep just to validate one
+ * optional field. `manual`/`on-demand` are signal-only (no scheduled deployment).
+ */
+const KNOWN_CADENCES: readonly string[] = [
+  'continuous',
+  'high',
+  'hourly',
+  'daily',
+  'nightly',
+  'weekly',
+  'manual',
+  'on-demand',
+];
+
+/** Cadence tiers that are signal-only — never provisioned as a Scheduled Deployment. */
+const SIGNAL_ONLY_CADENCES: readonly string[] = ['manual', 'on-demand'];
+
 interface EnvironmentSpec {
   readonly name: string;
   readonly networking: string;
@@ -71,6 +91,14 @@ interface AgentSpec {
   readonly fallbacks: readonly ModelId[];
   /** Fable requires 30-day retention; carried through for the apply step. */
   readonly dataRetentionDays?: number;
+  /**
+   * Optional cadence/schedule tier for a SCHEDULED DEPLOYMENT (Phase 4). When set, the
+   * agent template is provisioned as a CMA Scheduled Deployment that re-runs on this tier
+   * (the durable equivalent of the loop's cadence floor). Parsed from `schedule:` or
+   * `cadence:`; validated against {@link KNOWN_CADENCES}. Undefined → no schedule (the
+   * default; the agent is referenced by Sessions, not auto-deployed).
+   */
+  readonly cadence?: string;
 }
 
 interface ProvisionSpec {
@@ -219,6 +247,17 @@ function narrowEffort(value: string, lineNo: number): Effort {
   return found;
 }
 
+function narrowCadence(value: string, lineNo: number): string {
+  const v = value.toLowerCase().trim();
+  const found = KNOWN_CADENCES.find((c) => c === v);
+  if (found === undefined) {
+    throw new Error(
+      `provision-agents.yaml:${lineNo}: unknown cadence/schedule "${value}" (known: ${KNOWN_CADENCES.join(', ')})`,
+    );
+  }
+  return found;
+}
+
 function parseBool(value: string, lineNo: number): boolean {
   const v = value.trim().toLowerCase();
   if (v === 'true') return true;
@@ -261,6 +300,7 @@ function parseAgent(item: readonly RawLine[]): AgentSpec {
   let betas: string[] = [];
   let fallbacks: ModelId[] = [];
   let dataRetentionDays: number | undefined;
+  let cadence: string | undefined;
 
   for (let i = 0; i < item.length; ) {
     const line = item[i];
@@ -299,6 +339,12 @@ function parseAgent(item: readonly RawLine[]): AgentSpec {
           break;
         case 'data_retention_days':
           dataRetentionDays = Number.parseInt(scalar(value), 10);
+          break;
+        case 'schedule':
+        case 'cadence':
+          // Phase 4: an optional scheduled-deployment tier. Handled EXPLICITLY (the parser
+          // errors on unknown values rather than silently ignoring a typo'd schedule).
+          cadence = narrowCadence(scalar(value), line.lineNo);
           break;
         default:
           // system_ref, context_tokens, etc. — not knob-relevant; ignored here.
@@ -345,6 +391,7 @@ function parseAgent(item: readonly RawLine[]): AgentSpec {
     betas,
     fallbacks,
     dataRetentionDays,
+    cadence,
   };
 }
 
@@ -513,6 +560,13 @@ function printPlan(spec: ProvisionSpec, plans: readonly AgentPlan[], apply: bool
             : ''),
       );
     }
+    if (agent.cadence !== undefined) {
+      const note = SIGNAL_ONLY_CADENCES.includes(agent.cadence)
+        ? ' (signal-only — no scheduled deployment)'
+        : '';
+      // eslint-disable-next-line no-console
+      console.log(`      schedule=${agent.cadence}${note}`);
+    }
     for (const v of plan.violations) {
       // eslint-disable-next-line no-console
       console.log(`      ✗ KNOB VIOLATION: ${v}`);
@@ -522,30 +576,124 @@ function printPlan(spec: ProvisionSpec, plans: readonly AgentPlan[], apply: bool
       console.log(`      ✗ SPEC ERROR: ${e}`);
     }
   }
+
+  // ── Scheduled Deployments (Phase 4) — the bodies the apply WOULD POST ──────────
+  const deployments = deploymentPlans(spec);
+  if (deployments.length > 0) {
+    // eslint-disable-next-line no-console
+    console.log(`\n  scheduled deployments: ${deployments.length} (CMA ${MANAGED_AGENTS_BETA})`);
+    for (const d of deployments) {
+      // eslint-disable-next-line no-console
+      console.log(`    ⏲ ${d.role.padEnd(12)} ${d.agentName}  cadence=${d.cadence}`);
+      // eslint-disable-next-line no-console
+      console.log(`        → POST /v1/deployments  ${JSON.stringify(d.body)}`);
+    }
+  }
   // eslint-disable-next-line no-console
   console.log('');
 }
 
-// ─── Apply (gated, documented TODO) ─────────────────────────────────────────────
+// ─── Scheduled Deployment bridge (CMA) — authored + validated, gated on apply ────
+
+/** The beta header that gates the managed-agents control plane (agents + deployments). */
+const MANAGED_AGENTS_BETA = 'managed-agents-2026-04-01';
+
+/** One agent's resolved Scheduled-Deployment plan (only agents that pinned a cadence). */
+interface DeploymentPlan {
+  readonly role: string;
+  readonly agentName: string;
+  readonly cadence: string;
+  /** The CMA Scheduled-Deployment body this WOULD POST to /v1/deployments. */
+  readonly body: Record<string, unknown>;
+}
+
+/**
+ * Compute the Scheduled-Deployment bodies for any ENABLED agent that pinned a (non-signal-
+ * only) cadence. Pure + validated: a `manual`/`on-demand` tier is signal-only and never
+ * produces a deployment; a gated (enabled:false) agent is skipped. The body shape mirrors
+ * the CMA `POST /v1/deployments` contract (agent ref + a schedule), so the dry-run shows
+ * EXACTLY what the apply would send.
+ */
+function deploymentPlans(spec: ProvisionSpec): DeploymentPlan[] {
+  const plans: DeploymentPlan[] = [];
+  for (const agent of spec.agents) {
+    if (agent.cadence === undefined) continue;
+    if (!agent.enabled) continue; // gated agents are out of the default apply set.
+    if (SIGNAL_ONLY_CADENCES.includes(agent.cadence)) continue; // signal-only → no schedule.
+    plans.push({
+      role: agent.role,
+      agentName: agent.name,
+      cadence: agent.cadence,
+      body: {
+        // Reference the pre-provisioned agent by name (resolved to {agent_id, version} at
+        // apply time); a deployment NEVER inlines an agent (agents are created once).
+        agent: { name: agent.name },
+        environment: { name: spec.environment.name },
+        schedule: { cadence: agent.cadence },
+      },
+    });
+  }
+  return plans;
+}
+
+// ─── Apply (gated) — SDK-capability check + documented raw-HTTP fallback ──────────
+
+/** The minimal shape we probe for on a CMA SDK client to detect deployment support. */
+interface MaybeDeploymentSdk {
+  beta?: {
+    deployments?: { create?: unknown };
+    deployment_runs?: { create?: unknown };
+  };
+}
+
+/**
+ * Does the installed SDK expose the managed-agents Scheduled-Deployment surface
+ * (`client.beta.deployments` / `client.beta.deployment_runs`)? When present we'd drive the
+ * apply through the typed SDK; when ABSENT (older SDK) we fall back to a raw HTTP POST
+ * against `/v1/deployments` with the `managed-agents-2026-04-01` beta header. Pure: takes
+ * the candidate client so it stays unit-testable without a live SDK.
+ */
+export function sdkSupportsDeployments(client: unknown): boolean {
+  const c = client as MaybeDeploymentSdk | null | undefined;
+  return (
+    typeof c?.beta?.deployments?.create === 'function' ||
+    typeof c?.beta?.deployment_runs?.create === 'function'
+  );
+}
 
 /**
  * Apply the plan against CMA. Gated behind `ANTHROPIC_API_KEY` + `--apply`.
  *
- * TODO(phase-2): implement against `@departments/agent-runtime`'s CMA adapter once it
- * lands (`client.beta.{environments,agents}.*` with `managed-agents-2026-04-01`):
- *   1. environments.create / update (idempotent by name) → env_id
- *   2. for each enabled agent: agents.create (or agents.update --version N if it exists),
- *      mapping {model, effort→output_config.effort, thinking, system, tools, skills,
- *      mcp_servers, multiagent}; Fable carries betas + fallbacks + 30d retention.
- *   3. persist {agentId, version} to config — NEVER into the request path (agents are
- *      referenced by ID per tick, never rebuilt).
- * This control-plane apply stays in the `ant`/CLI lane; sessions are the data plane,
- * driven by the engine via the SDK.
+ * Two control-plane steps, both still requiring the live CMA adapter to EXECUTE (no creds
+ * here — authored + validated only, then thrown NotImplemented, mirroring Phases 2–3):
+ *
+ *  1. AGENTS/ENVIRONMENT (unchanged): environments.create/update (idempotent by name) →
+ *     env_id; per enabled agent, agents.create or agents.update --version N, mapping
+ *     {model, effort→output_config.effort, thinking, system, tools, skills, mcp_servers,
+ *     multiagent}; Fable carries betas + fallbacks + 30d retention. {agentId, version} is
+ *     persisted to config, NEVER into the request path.
+ *
+ *  2. SCHEDULED DEPLOYMENTS (Phase 4, NEW): for each {@link deploymentPlans} entry, either
+ *       a. SDK path — if {@link sdkSupportsDeployments} is true:
+ *            await client.beta.deployments.create(body)   // typed, preferred
+ *       b. RAW-HTTP fallback — older SDK without the surface:
+ *            POST {ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com'}/v1/deployments
+ *            headers: x-api-key, anthropic-version, anthropic-beta: managed-agents-2026-04-01
+ *            body: the {agent, environment, schedule} from deploymentPlans()
+ *     A deployment re-runs the agent on its cadence tier (the durable analogue of the
+ *     loop's cadence floor); manual/on-demand stays signal-only (no deployment).
+ *
+ * The dry-run already validated every (model, knob) pairing AND every cadence, and printed
+ * the deployment bodies — so the gated apply only needs the live adapter to send them.
  */
-function applyPlan(): never {
+function applyPlan(spec: ProvisionSpec): never {
+  const deployments = deploymentPlans(spec);
   throw new Error(
-    'apply is not implemented yet (Phase 2 TODO). The dry-run validated the spec; ' +
-      'wire applyPlan() to the CMA adapter in @departments/agent-runtime to provision for real.',
+    'apply is not implemented yet (creds/SDK-gated — authored + validated only). The dry-run ' +
+      `validated the spec and resolved ${deployments.length} scheduled deployment(s); wire ` +
+      'applyPlan() to @departments/agent-runtime\'s CMA adapter to provision agents + ' +
+      `Scheduled Deployments for real (SDK client.beta.deployments, or the raw /v1/deployments ` +
+      `POST with the ${MANAGED_AGENTS_BETA} beta header).`,
   );
 }
 
@@ -564,7 +712,8 @@ export function hasViolations(plans: readonly AgentPlan[]): boolean {
   return plans.some((p) => p.violations.length > 0 || p.specErrors.length > 0);
 }
 
-export type { ProvisionSpec, AgentSpec, AgentPlan, EnvironmentSpec };
+export { deploymentPlans };
+export type { ProvisionSpec, AgentSpec, AgentPlan, EnvironmentSpec, DeploymentPlan };
 
 function main(argv: readonly string[]): void {
   const apply = argv.includes('--apply');
@@ -597,7 +746,7 @@ function main(argv: readonly string[]): void {
     return;
   }
 
-  applyPlan();
+  applyPlan(spec);
 }
 
 // Run only when executed directly (not when imported by the test).

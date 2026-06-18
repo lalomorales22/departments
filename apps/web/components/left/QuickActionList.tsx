@@ -26,6 +26,7 @@ const ACTIONS: QuickAction[] = [
  */
 export function QuickActionList() {
   const setCommandOpen = useCockpit((s) => s.setCommandOpen);
+  const openImport = useCockpit((s) => s.openImport);
 
   return (
     <div className="px-3 py-3">
@@ -37,7 +38,7 @@ export function QuickActionList() {
             <li key={action.id}>
               <button
                 type="button"
-                onClick={() => setCommandOpen(true)}
+                onClick={() => (action.id === 'import-artifact' ? openImport() : setCommandOpen(true))}
                 className="group flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-muted transition-colors hover:bg-surface-2 hover:text-text focus-ring"
               >
                 <Icon className="h-3.5 w-3.5 shrink-0 text-faint group-hover:text-text" strokeWidth={1.5} />

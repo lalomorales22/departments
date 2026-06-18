@@ -215,6 +215,12 @@ export function useRunTrace(loopId: string): TraceEntry[] | null {
         lastPhase = ph;
       } else if (e.kind === 'log' && e.payload.source === 'grader' && e.payload.message.startsWith('outcome:')) {
         entries.push({ id: `tr-${e.id}`, phase: 'evaluate', stamp: 'GRADER', title: e.payload.message, sub: `seq ${e.seq}` });
+      } else if (e.kind === 'log' && e.payload.source === 'objective') {
+        // A CEO set_objective steer (frozen protocol: a `log` with source 'objective')
+        // — surfaced in the child's HISTORY against the PLAN phase it feeds.
+        entries.push({ id: `tr-${e.id}`, phase: 'plan', stamp: 'OBJECTIVE', title: e.payload.message, sub: 'from CEO meta-loop' });
+      } else if (e.kind === 'log' && e.payload.source === 'ceo') {
+        entries.push({ id: `tr-${e.id}`, phase: 'improve', stamp: 'CEO', title: e.payload.message, sub: `seq ${e.seq}` });
       } else if (e.kind === 'log' && e.payload.source === 'guardrail') {
         entries.push({ id: `tr-${e.id}`, phase: 'memory', stamp: 'GUARDRAIL', title: e.payload.message, sub: `seq ${e.seq}` });
       } else if (e.kind === 'error') {
@@ -240,7 +246,7 @@ export interface LoopInspect {
  * the loop changes or a run completes (so artifacts/memory reflect the latest cycle).
  * Returns `null` until loaded, or `{ exists:false }` when the loop has never run locally.
  */
-export function useLoopInspect(loopId: string): LoopInspect | null {
+export function useLoopInspect(loopId: string, reloadKey = 0): LoopInspect | null {
   const runStatus = useRunStatus(loopId);
   const [data, setData] = useState<LoopInspect | null>(null);
   useEffect(() => {
@@ -256,9 +262,49 @@ export function useLoopInspect(loopId: string): LoopInspect | null {
     return () => {
       cancelled = true;
     };
-    // Refetch on loop switch + when a run finishes/pauses (new artifacts on disk).
-  }, [loopId, runStatus]);
+    // Refetch on loop switch, when a run finishes/pauses (new artifacts on disk), and
+    // when `reloadKey` bumps (e.g. after a ⌘I import).
+  }, [loopId, runStatus, reloadKey]);
   return data;
+}
+
+// ── Pending approvals (always_ask tool confirmation + child-spawn request) ──────
+
+export interface PendingApprovals {
+  /** An irreversible tool awaiting Commander confirmation, or null. */
+  tool: { tool: string; summary: string } | null;
+  /** A child-spawn request awaiting approval, or null. */
+  spawn: { message: string } | null;
+}
+
+/**
+ * Derive the loop's UNRESOLVED approvals from the live feed (frozen protocol — no new
+ * event kinds): an `always_ask` is a `tool_use` start that no later result/error has
+ * settled; a child-spawn is a `log` (source 'spawn') "awaiting…" that no later approved/
+ * denied outcome has settled. The cockpit's ApprovalBanner renders these and POSTs the
+ * Commander's verdict to /decide.
+ */
+export function usePendingApprovals(loopId: string): PendingApprovals {
+  const events = useRealtime((s) => s.liveEvents[loopId]);
+  return useMemo(() => {
+    let tool: PendingApprovals['tool'] = null;
+    let spawn: PendingApprovals['spawn'] = null;
+    if (events) {
+      for (const e of events) {
+        if (e.kind === 'tool_use') {
+          const p = e.payload;
+          if (p.phase === 'start' && p.summary.startsWith('always_ask')) {
+            tool = { tool: p.tool, summary: p.summary.replace(/^always_ask · /, '') };
+          } else if (p.phase === 'result' || p.phase === 'error') {
+            tool = null; // settled (approved/denied)
+          }
+        } else if (e.kind === 'log' && e.payload.source === 'spawn') {
+          spawn = /awaiting/i.test(e.payload.message) ? { message: e.payload.message } : null;
+        }
+      }
+    }
+    return { tool, spawn };
+  }, [events]);
 }
 
 /** Loop health (0–100): the live `health` metric if present, else the fixture value. */

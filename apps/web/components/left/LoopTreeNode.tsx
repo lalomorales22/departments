@@ -1,20 +1,26 @@
 'use client';
 
-import type { LoopTreeNode as LoopTreeNodeT } from '@departments/shared';
-import { ChevronDown, ChevronRight, MoreVertical } from 'lucide-react';
+import { ChevronDown, ChevronRight, Crown, MoreVertical } from 'lucide-react';
 import { useState } from 'react';
 import { StatusDot } from '@/components/atoms';
 import { cn } from '@/lib/cn';
-import { isLiveLoopStatus, loopStatusAccent } from '@/lib/status-theme';
+import { accentVar, isLiveLoopStatus, loopStatusAccent } from '@/lib/status-theme';
 import { useCockpit } from '@/lib/store';
+import { isCeoLoop, type TreeRollup } from '@/lib/tree';
+
+/** Health → accent: a quick read of how a unit (or its subtree) is doing. */
+function healthAccent(h: number): 'green' | 'amber' | 'red' {
+  return h >= 85 ? 'green' : h >= 60 ? 'amber' : 'red';
+}
 
 /**
- * One recursive row in the loop hierarchy. Indents by depth, shows a collapse
- * chevron when it has children, a status dot (live = glow + pulse), the display
- * name, a mono level tag (L1..L4), and a hover-only kebab. Selecting the row focuses
- * the loop. Children render recursively while expanded (default expanded).
+ * One recursive row in the loop hierarchy, bound to the ROLLED-UP state. A parent's
+ * status dot reflects the most attention-needing status in its subtree (an error/paused
+ * descendant surfaces upward), while the glow stays honest (only a loop whose OWN status
+ * is running glows). Each row shows a rolled health % (own % for leaves); the CEO root
+ * wears a purple crown. Selecting a row focuses the loop.
  */
-export function LoopTreeNode({ node, depth }: { node: LoopTreeNodeT; depth: number }) {
+export function LoopTreeNode({ node, depth }: { node: TreeRollup; depth: number }) {
   const { loop, children } = node;
   const selectedLoopId = useCockpit((s) => s.selectedLoopId);
   const setSelectedLoop = useCockpit((s) => s.setSelectedLoop);
@@ -22,8 +28,11 @@ export function LoopTreeNode({ node, depth }: { node: LoopTreeNodeT; depth: numb
 
   const hasChildren = children.length > 0;
   const selected = selectedLoopId === loop.id;
-  const accent = loopStatusAccent[loop.status];
+  const ceo = isCeoLoop(loop);
+  // Dot color = rolled (worst) status; glow = this loop's OWN liveness only.
+  const accent = ceo ? 'purple' : loopStatusAccent[node.rolledStatus];
   const live = isLiveLoopStatus(loop.status);
+  const shownHealth = hasChildren ? node.rolledHealth : loop.health;
 
   return (
     <div>
@@ -67,9 +76,27 @@ export function LoopTreeNode({ node, depth }: { node: LoopTreeNodeT; depth: numb
             ))}
         </button>
 
-        <StatusDot accent={accent} live={live} size={6} />
+        {ceo ? (
+          <Crown
+            className="h-3.5 w-3.5 shrink-0"
+            strokeWidth={2}
+            style={{ color: accentVar('purple') }}
+            aria-label="CEO meta-loop"
+          />
+        ) : (
+          <StatusDot accent={accent} live={live} size={6} />
+        )}
 
         <span className="min-w-0 flex-1 truncate text-sm leading-none">{loop.displayName}</span>
+
+        {/* rolled-up health % (own % for leaves) — colored by health band */}
+        <span
+          className="shrink-0 font-mono text-2xs tabular"
+          style={{ color: accentVar(healthAccent(shownHealth)) }}
+          title={hasChildren ? `rolled health across ${node.descendantCount + 1} loops` : 'loop health'}
+        >
+          {shownHealth}%
+        </span>
 
         <span className="shrink-0 font-mono text-2xs tabular text-faint">L{loop.level}</span>
 

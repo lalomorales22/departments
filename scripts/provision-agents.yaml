@@ -144,22 +144,33 @@ agents:
   # Knob rule: Opus 4.8 → adaptive ON; effort `high` default, `xhigh` for hard agentic
   # coordination; no budget_tokens/sampling. The CEO/meta role: its EXECUTE is
   # coordination, not production. Its multiagent roster is the L1 department agents (one
-  # hop each, chained). Here it delegates to the loop's own roster as a placeholder; the
-  # CEO tree wiring lands in Phase 4.
+  # delegation hop each) — wired for real in Phase 4 (was a single-`planner` placeholder).
+  # The CEO steers each L1 lead async (set_objective writes the lead's STRATEGY.md); the
+  # lead's OWN coordinator roster then fans out to its workers — loops all the way down.
+  # Every (model, knob) pairing in the referenced agents stays legal; the gated Fable
+  # `strategy` lead remains enabled:false so it is OUT of the default apply set.
   - role: coordinator
     name: departments-coordinator
     model: claude-opus-4-8
     effort: high            # default; xhigh for hard agentic coordination turns
     thinking: adaptive
+    schedule: hourly        # Phase 4: CEO reviews on the hourly tier (a CEO steers, not spins)
     system_ref: prompts/coordinator.md
     tools:
       - type: agent_toolset_20260401
     skills: []
     mcp_servers: []
+    # One delegation hop to the real L1 department role agents (the canonical roster). The
+    # planner is the department's own coordinator (it fans out to executor/qa/docs/reviewer
+    # internally), so the CEO hops to the leads; `strategy` is gated (greenfield only).
     multiagent:
       type: coordinator
       agents:
         - role_ref: planner
+        - role_ref: executor
+        - role_ref: reviewer
+        - role_ref: docs
+        - role_ref: strategy
 
   # ── STRATEGY — strategy tier (Claude Fable 5, effort xhigh) — OPTIONAL, GATED ──────
   # Hardest CEO / greenfield strategy only. Gate behind explicit cost approval

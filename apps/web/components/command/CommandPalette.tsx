@@ -72,6 +72,7 @@ export function CommandPalette() {
   const setCommandOpen = useCockpit((s) => s.setCommandOpen);
   const setSelectedLoop = useCockpit((s) => s.setSelectedLoop);
   const setTab = useCockpit((s) => s.setTab);
+  const openImport = useCockpit((s) => s.openImport);
 
   const close = useCallback(() => setCommandOpen(false), [setCommandOpen]);
 
@@ -175,7 +176,7 @@ export function CommandPalette() {
               <PaletteItem value="new task" icon={ListPlus} onSelect={close}>
                 New Task
               </PaletteItem>
-              <PaletteItem value="import artifact" icon={FileDown} onSelect={close}>
+              <PaletteItem value="import artifact" icon={FileDown} onSelect={openImport}>
                 Import Artifact
               </PaletteItem>
             </Command.Group>

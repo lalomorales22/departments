@@ -25,6 +25,8 @@ import { EVENT_KINDS } from '@departments/shared';
 export interface RunHandle {
   child: ChildProcessWithoutNullStreams;
   mode: 'auto' | 'step';
+  /** Started with interactive Commander approvals (always_ask + child-spawn over stdin). */
+  approvals?: boolean;
   startedAt: number;
 }
 

@@ -46,9 +46,22 @@ interface CockpitState {
   shortcutSheetOpen: boolean;
   setShortcutSheetOpen: (open: boolean) => void;
 
+  /** Import-Artifact (⌘I) modal — opens on the ARTIFACTS tab. */
+  importOpen: boolean;
+  setImportOpen: (open: boolean) => void;
+  /** Jump to ARTIFACTS and open the import modal (⌘I / command palette / quick action). */
+  openImport: () => void;
+
   /** Stub focus targets for chords whose panels are not built yet. */
   mapFocused: boolean;
   setMapFocused: (v: boolean) => void;
+
+  /**
+   * Client-side loop config overrides (cadence edited in the Inspector). The engine/DB
+   * owns the durable value in prod; this reflects an in-session edit optimistically.
+   */
+  loopCadence: Record<string, string>;
+  setLoopCadence: (loopId: string, cadence: string) => void;
 }
 
 export const useCockpit = create<CockpitState>()(
@@ -80,8 +93,16 @@ export const useCockpit = create<CockpitState>()(
       shortcutSheetOpen: false,
       setShortcutSheetOpen: (open) => set({ shortcutSheetOpen: open }),
 
+      importOpen: false,
+      setImportOpen: (open) => set({ importOpen: open }),
+      openImport: () => set({ activeTab: 'ARTIFACTS', importOpen: true, commandOpen: false }),
+
       mapFocused: false,
       setMapFocused: (v) => set({ mapFocused: v }),
+
+      loopCadence: {},
+      setLoopCadence: (loopId, cadence) =>
+        set((s) => ({ loopCadence: { ...s.loopCadence, [loopId]: cadence } })),
     }),
     {
       name: 'departments-cockpit',

@@ -36,9 +36,19 @@ import {
   log,
   proxyActivities,
   setHandler,
+  sleep,
   workflowInfo,
 } from '@temporalio/workflow';
-import type { CompactCycleState, RunCycleInput, RunCycleOutput } from './activities';
+// Pure, deterministic cadence floors (no IO/clock) — safe to import into the workflow
+// sandbox and use to DERIVE the IDLE_WAIT duration before `sleep()`ing it.
+import { cadenceFloorMs } from '@departments/orchestration';
+import type {
+  CeoReviewInput,
+  CeoReviewOutput,
+  CompactCycleState,
+  RunCycleInput,
+  RunCycleOutput,
+} from './activities';
 
 /** Workflow input. `orgId` scopes the ledger; missions are the durable objective. */
 export interface LoopWorkflowInput {
@@ -49,6 +59,21 @@ export interface LoopWorkflowInput {
   maxCycles: number;
   /** Cycles to run before recycling history via continue-as-new. */
   cyclesPerWorkflow: number;
+  /**
+   * Cadence tier (continuous/high/hourly/daily/…). Drives the DURABLE IDLE_WAIT between
+   * a completed cycle and continue-as-new: the floor for the tier (`cadenceFloorMs`) is
+   * the minimum interval between ticks — the runaway guard, enforced where autonomy scales.
+   * Default 'continuous' (a 5s floor). A signal-only tier (manual/on-demand → floor 0)
+   * skips the wait entirely.
+   */
+  cadence?: string;
+  /**
+   * The parent loop's id when this loop was SPAWNED by a parent (Phase 4 hierarchy);
+   * absent for a root loop. Carried for HISTORY/rollup; the engine reads it from artifacts.
+   */
+  parentLoopId?: string;
+  /** This loop's level in the org tree (L1 root … L4 worker). Spawned children are parent.level+1. */
+  level?: number;
   /**
    * Carried-across-continue-as-new compact state. Absent on the very first start;
    * populated by this workflow when it recycles itself.
@@ -91,6 +116,23 @@ const { runCycleActivity } = proxyActivities<{
   // One cycle is several model turns + git snapshots; give it room.
   startToCloseTimeout: '30 minutes',
   // Idempotent on runId (the activity reattaches by runId), so retries are safe.
+  retry: {
+    initialInterval: '5s',
+    backoffCoefficient: 2,
+    maximumInterval: '2m',
+    maximumAttempts: 5,
+  },
+});
+
+/**
+ * The CEO review activity — one Batch-API review fan-out over the children + objectives
+ * written back. Idempotent on `reviewId` (the activity reattaches by review record), so
+ * retries are safe. Shorter window than a cycle (no production work — just coordination).
+ */
+const { ceoReviewActivity } = proxyActivities<{
+  ceoReviewActivity(input: CeoReviewInput): Promise<CeoReviewOutput>;
+}>({
+  startToCloseTimeout: '10 minutes',
   retry: {
     initialInterval: '5s',
     backoffCoefficient: 2,
@@ -189,6 +231,21 @@ export async function loopWorkflow(input: LoopWorkflowInput): Promise<void> {
     }
   }
 
+  // ── IDLE_WAIT: cadence-aware DURABLE idle before recycling history ───────────
+  // A loop "re-runs constantly", so without a floor a continuous tier could spin as fast
+  // as the engine returns. Derive the tier's minimum inter-tick interval (pure, replay-
+  // stable), then sleep it DURABLY — waking early on a `runNow` signal. We skip the wait
+  // when paused (we already idle on the pause Condition) or for a signal-only tier (floor
+  // 0 → manual/on-demand never auto-ticks). `sleep`/`condition` are the ONLY time sources
+  // the workflow sandbox allows (no Date.now/setTimeout).
+  const idleMs = paused ? 0 : cadenceFloorMs(input.cadence ?? 'continuous');
+  if (idleMs > 0) {
+    log.info('idle wait (cadence floor)', { loopId: input.loopId, cadence: input.cadence ?? 'continuous', idleMs });
+    // Reset the gate so we wait fresh and only wake on a NEW runNow during this idle.
+    runNowRequested = false;
+    await Promise.race([sleep(idleMs), condition(() => runNowRequested)]);
+  }
+
   // ── Recycle history: continue-as-new with COMPACT carried state ─────────────
   const nextCarried: CarriedState = {
     nextCycle: cycle,
@@ -203,4 +260,149 @@ export async function loopWorkflow(input: LoopWorkflowInput): Promise<void> {
     spentUsd: ledger.spentUsd,
   });
   await continueAsNew<typeof loopWorkflow>({ ...input, carried: nextCarried });
+}
+
+// ─── The CEO meta-loop workflow ──────────────────────────────────────────────────
+
+/**
+ * Input to the durable CeoWorkflow — ONE instance per CEO (root) loop. It does NO
+ * production work; each iteration is one async-steer REVIEW over its direct child loops
+ * (`ceoReviewActivity`): batch-grade their last persisted state, plan an objective per
+ * child, write it back. Mirrors {@link LoopWorkflowInput} (signals + query + continue-as-new).
+ */
+export interface CeoWorkflowInput {
+  /** The CEO (root) loop's id. */
+  ceoLoopId: string;
+  /** Org the review's ledger + spawn caps scope to. */
+  orgId?: string;
+  /** The direct-report child loop ids the CEO reviews each iteration. */
+  childLoopIds: string[];
+  /** The CEO's durable mission/charter (stable shared prefix for the batch review). */
+  mission: string;
+  /** Reviews to run before recycling history via continue-as-new. */
+  reviewsPerWorkflow: number;
+  /** Hard ceiling on total reviews across ALL continue-as-new generations. 0 = unbounded. */
+  maxReviews?: number;
+  /** USD to reallocate weakest→strongest each review (0/undefined = no budget move). */
+  reallocateUsd?: number;
+  /** Cadence floor between reviews (default 'hourly' — a CEO steers, it does not spin). */
+  cadence?: string;
+  /** Carried-across-continue-as-new compact state. Absent on the very first start. */
+  carried?: CeoCarriedState;
+}
+
+/** The COMPACT state carried across a CeoWorkflow continue-as-new boundary. */
+export interface CeoCarriedState {
+  /** Next review number to run (1-based). */
+  nextReview: number;
+  /** Running USD the CEO's reviews have spent (priced at the 50% Batch rate). */
+  reviewSpentUsd: number;
+  /** True if the CEO was paused (operator) when it recycled. */
+  paused: boolean;
+}
+
+/** Lightweight introspection for the gateway/UI (does not affect determinism). */
+export interface CeoWorkflowStatus {
+  ceoLoopId: string;
+  review: number;
+  paused: boolean;
+  childCount: number;
+  reviewSpentUsd: number;
+}
+export const ceoStatusQuery = defineQuery<CeoWorkflowStatus>('ceoStatus');
+
+/**
+ * The durable CeoWorkflow.
+ *
+ * Loops `reviewsPerWorkflow` times (each iteration = one {@link ceoReviewActivity}),
+ * honoring the SAME `pause`/`runNow` control signals as the loop workflow, idling on the
+ * cadence floor between reviews, then continue-as-news with a compact carried state.
+ * Stops only when `maxReviews` is reached (if set). Deterministic: `sleep`/`condition`
+ * only — the review's IO (batch grade, artifact writes, ledger) lives in the activity.
+ */
+export async function ceoWorkflow(input: CeoWorkflowInput): Promise<void> {
+  const carried: CeoCarriedState = input.carried ?? {
+    nextReview: 1,
+    reviewSpentUsd: 0,
+    paused: false,
+  };
+
+  // ── Control state (mutated only by signal handlers; replay-stable) ──────────
+  let runNowRequested = false;
+  let paused = carried.paused;
+  let review = carried.nextReview;
+  let reviewSpentUsd = carried.reviewSpentUsd;
+
+  setHandler(runNowSignal, () => {
+    runNowRequested = true;
+    paused = false;
+  });
+  setHandler(pauseSignal, () => {
+    paused = true;
+  });
+  setHandler(ceoStatusQuery, (): CeoWorkflowStatus => ({
+    ceoLoopId: input.ceoLoopId,
+    review,
+    paused,
+    childCount: input.childLoopIds.length,
+    reviewSpentUsd,
+  }));
+
+  log.info('ceoWorkflow started', {
+    ceoLoopId: input.ceoLoopId,
+    startReview: review,
+    children: input.childLoopIds.length,
+    reviewsPerWorkflow: input.reviewsPerWorkflow,
+    maxReviews: input.maxReviews ?? 0,
+    runId: workflowInfo().runId,
+  });
+
+  const reviewsThisRun = Math.max(1, input.reviewsPerWorkflow);
+  const maxReviews = input.maxReviews ?? 0;
+  let ranInThisGeneration = 0;
+
+  while (ranInThisGeneration < reviewsThisRun) {
+    if (maxReviews > 0 && review > maxReviews) {
+      log.info('maxReviews reached — CEO complete', { ceoLoopId: input.ceoLoopId, review, maxReviews });
+      return;
+    }
+
+    if (paused) {
+      log.info('CEO paused — awaiting runNow', { ceoLoopId: input.ceoLoopId, review });
+      await condition(() => runNowRequested);
+      runNowRequested = false;
+      continue;
+    }
+
+    log.info('running CEO review', { ceoLoopId: input.ceoLoopId, review });
+    const out = await ceoReviewActivity({
+      ceoLoopId: input.ceoLoopId,
+      orgId: input.orgId,
+      childLoopIds: input.childLoopIds,
+      mission: input.mission,
+      review,
+      reallocateUsd: input.reallocateUsd,
+    });
+
+    reviewSpentUsd += out.reviewCostUsd;
+    review += 1;
+    ranInThisGeneration += 1;
+  }
+
+  // ── IDLE_WAIT: cadence floor between reviews (durable; wakes on runNow) ──────
+  const idleMs = paused ? 0 : cadenceFloorMs(input.cadence ?? 'hourly');
+  if (idleMs > 0) {
+    log.info('CEO idle wait (cadence floor)', { ceoLoopId: input.ceoLoopId, cadence: input.cadence ?? 'hourly', idleMs });
+    runNowRequested = false;
+    await Promise.race([sleep(idleMs), condition(() => runNowRequested)]);
+  }
+
+  const nextCarried: CeoCarriedState = { nextReview: review, reviewSpentUsd, paused };
+  log.info('CEO continue-as-new (history recycle)', {
+    ceoLoopId: input.ceoLoopId,
+    nextReview: review,
+    paused,
+    reviewSpentUsd,
+  });
+  await continueAsNew<typeof ceoWorkflow>({ ...input, carried: nextCarried });
 }

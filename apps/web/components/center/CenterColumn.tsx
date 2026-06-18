@@ -8,6 +8,9 @@ import { KanbanBoard } from './KanbanBoard';
 import { MetricGrid } from './MetricGrid';
 import { LogConsole } from './LogConsole';
 import { ActivityMap } from './ActivityMap';
+import { AnalyticsView } from './AnalyticsView';
+import { ArtifactsView } from './ArtifactsView';
+import { ApprovalBanner } from './ApprovalBanner';
 import { SectionLabel } from '../atoms';
 
 /**
@@ -23,6 +26,7 @@ export function CenterColumn({ loopId }: { loopId: string }) {
     <div className="flex flex-col gap-3 p-3">
       <LoopHeader loopId={loopId} />
       <LoopPipeline loopId={loopId} />
+      <ApprovalBanner loopId={loopId} />
 
       {activeTab === 'DASHBOARD' && (
         <>
@@ -51,12 +55,8 @@ export function CenterColumn({ loopId }: { loopId: string }) {
 
       {activeTab === 'TASKS' && <KanbanBoard loopId={loopId} />}
 
-      {activeTab === 'ARTIFACTS' && (
-        <TabStub title="ARTIFACTS" phase="Phase 4" blurb="Cross-loop file & memory browser with semantic search, markdown render, and version diff." />
-      )}
-      {activeTab === 'ANALYTICS' && (
-        <TabStub title="ANALYTICS" phase="Phase 4–5" blurb="Aggregate health over time, per-loop comparison, resource allocation, and drill-down." />
-      )}
+      {activeTab === 'ARTIFACTS' && <ArtifactsView loopId={loopId} />}
+      {activeTab === 'ANALYTICS' && <AnalyticsView />}
       {activeTab === 'SETTINGS' && (
         <TabStub title="SETTINGS" phase="Phase 5" blurb="Workspace defaults, gate thresholds, members & roles, billing/limits, integrations." />
       )}

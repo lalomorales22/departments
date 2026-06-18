@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BATCH_DISCOUNT_MULTIPLIER,
+  batchCostOfUsage,
   BudgetLedger,
   CACHE_READ_MULTIPLIER,
   costOfUsage,
   DEFAULT_SOFT_CAP_FRACTION,
+  estimateCallCostUsd,
   HAIKU_MODEL_ID,
+  NOMINAL_TICK_USAGE,
   OPUS_MODEL_ID,
   SONNET_MODEL_ID,
+  stricterAction,
   type ModelUsage,
   type UsageScope,
 } from './ledger.js';
@@ -154,5 +159,49 @@ describe('BudgetLedger — org rollup sums loop spend', () => {
     expect(first).toBeCloseTo(25, 6);
     expect(second).toBeCloseTo(25, 6);
     expect(ledger.status('loop_acc').spentUsd).toBeCloseTo(50, 6);
+  });
+});
+
+describe('stricterAction — cap precedence', () => {
+  it('returns the more severe of two cap actions (pause > downgrade > ok)', () => {
+    expect(stricterAction('ok', 'ok')).toBe('ok');
+    expect(stricterAction('ok', 'downgrade')).toBe('downgrade');
+    expect(stricterAction('downgrade', 'ok')).toBe('downgrade');
+    expect(stricterAction('downgrade', 'pause')).toBe('pause');
+    expect(stricterAction('pause', 'downgrade')).toBe('pause');
+    expect(stricterAction('pause', 'pause')).toBe('pause');
+  });
+});
+
+describe('Batch API cost lever (50% off)', () => {
+  it('prices a batched call at half the synchronous cost', () => {
+    const usage = plainUsage(1_000_000, 0);
+    expect(BATCH_DISCOUNT_MULTIPLIER).toBe(0.5);
+    expect(batchCostOfUsage(usage, OPUS_MODEL_ID)).toBeCloseTo(costOfUsage(usage, OPUS_MODEL_ID) / 2, 9);
+    expect(batchCostOfUsage(usage, OPUS_MODEL_ID)).toBeCloseTo(2.5, 6); // $5/Mtok in → $2.5 batched
+  });
+});
+
+describe('estimateCallCostUsd — escalation headroom projection', () => {
+  it('projects a nominal call cost per tier (Opus > Sonnet > Haiku)', () => {
+    const opus = estimateCallCostUsd(OPUS_MODEL_ID);
+    const sonnet = estimateCallCostUsd(SONNET_MODEL_ID);
+    const haiku = estimateCallCostUsd(HAIKU_MODEL_ID);
+    expect(opus).toBeGreaterThan(sonnet);
+    expect(sonnet).toBeGreaterThan(haiku);
+    expect(opus).toBeCloseTo(costOfUsage(NOMINAL_TICK_USAGE, OPUS_MODEL_ID), 9);
+  });
+});
+
+describe('headroom accessors', () => {
+  it('reports loop + org headroom and treats a 0 hard cap as uncapped', () => {
+    const ledger = new BudgetLedger();
+    ledger.registerLoop({ orgId: ORG, loopId: 'loop_h', hardCapUsd: 100 });
+    ledger.registerOrg({ orgId: ORG, hardCapUsd: 250 });
+    ledger.recordUsage(scope('loop_h'), plainUsage(0, 2_000_000), OPUS_MODEL_ID); // $50
+    expect(ledger.headroomUsd('loop_h')).toBeCloseTo(50, 6);
+    expect(ledger.orgHeadroomUsd(ORG)).toBeCloseTo(200, 6);
+    expect(ledger.headroomUsd('unknown')).toBe(Number.POSITIVE_INFINITY);
+    expect(ledger.orgHeadroomUsd('no_org')).toBe(Number.POSITIVE_INFINITY);
   });
 });

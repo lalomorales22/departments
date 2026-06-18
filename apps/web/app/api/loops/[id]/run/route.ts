@@ -28,6 +28,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const url = new URL(req.url);
   const mode = url.searchParams.get('mode') === 'step' ? 'step' : 'auto';
   const stall = url.searchParams.get('stall') === '1';
+  const approvals = url.searchParams.get('approvals') === '1';
   const cycles = clampCycles(url.searchParams.get('cycles'));
 
   const rt = serverRealtime();
@@ -38,6 +39,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const args = ['--filter', '@departments/orchestration', 'exec', 'tsx', 'src/cli.ts', loopId, '--stream'];
   if (mode === 'step') args.push('--step');
   if (stall) args.push('--stall');
+  if (approvals) args.push('--approvals');
   args.push('--cycles', String(cycles));
 
   let child;
@@ -48,7 +50,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     return Response.json({ started: false, reason: 'spawn-failed', mode }, { status: 500 });
   }
 
-  const handle: RunHandle = { child, mode, startedAt: Date.now() };
+  const handle: RunHandle = { child, mode, approvals, startedAt: Date.now() };
   rt.runs.set(loopId, handle);
 
   // Pipe NDJSON stdout → ingest into the shared store (events outlive this request).

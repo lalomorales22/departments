@@ -15,4 +15,11 @@ export * from './local-driver.js';
 export * from './no-progress.js';
 export * from './step-gate.js';
 export * from './stream-persistence.js';
+export * from './escalation.js';
+export * from './tool-gate.js';
+export * from './semaphore.js';
+export * from './cadence.js';
+export * from './spawn.js';
+export * from './rollup.js';
+export * from './ceo.js';
 // `./cli` is a runnable entry (see package.json exports), not re-exported here.

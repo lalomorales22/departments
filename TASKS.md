@@ -173,7 +173,9 @@ Because a loop "re‑runs constantly," cost and runaway control are **structural
 
 ---
 
-## Phase 4 — Hierarchy & Meta‑Loop
+## Phase 4 — Hierarchy & Meta‑Loop  ✅ SHIPPED (Cycle 4, 2026-06-17)
+
+> **Status:** complete. A **CEO meta‑loop** coordinates a tree of child loops, and the runaway/cost/irreversible‑action guards are enforced where autonomy first scales: **org‑wide hard cap** (stricter of loop∪org, `stricterAction`), **concurrency semaphore** (in‑mem + Redis‑gated), **cadence floors**, **`always_ask`** on irreversible tools, **child‑spawn approval** (max‑depth / per‑org cap / denial‑loop guard), and the **budget‑vs‑escalation precedence** (escalation is refused under any non‑`ok` cap or insufficient headroom, decays on a clean pass). `set_objective` writes a child's CEO‑owned `STRATEGY.md` + memory + ledger cap; the CEO review runs through the **Batch API** (50% off, pre‑warmed shared prefix). Temporal `ceoWorkflow`/spawn+review activities/cadence‑aware `IDLE_WAIT`, the HMAC webhook → `run_now`, CMA Scheduled Deployments, and the Postgres rollup views (`loop_tree`/`loop_rollup`/`org_health_daily`) are authored + gated behind Docker/creds. Cockpit: rolled‑up tree + CEO crown, ANALYTICS + ARTIFACTS (⌘I import) tabs, cadence editor, `set_objective` in HISTORY, and the approval banner. See [`HANDOFF.md`](./HANDOFF.md) for the full Cycle‑4 record. The checklist below is kept for provenance; the frozen `Event` protocol was NOT bumped (new signals reuse existing kinds).
 
 **Goal.** Turn one loop into "loops all the way down": L1–L4 trees, the CEO meta‑loop coordinating children (Batch reviews), scheduling/continuous cadence, rolled‑up health/metrics. **This is where autonomy scales — so the concurrency semaphore, cadence floors, the org‑wide hard budget cap, and `always_ask` enforcement become real *here*, not in Phase 5.**
 

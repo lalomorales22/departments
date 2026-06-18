@@ -109,6 +109,42 @@ export function costOfUsage(usage: ModelUsage, modelId: string): number {
   return input + output + cacheRead + cacheWrite;
 }
 
+/**
+ * The Batch API bills at 50% of the synchronous rate (cost lever #3:
+ * caching → tiering → **batching** → effort). The CEO meta-loop submits its
+ * can-wait review fan-out (N child REPORT/Metric summaries sharing one cached
+ * prefix) as a single batch; the ledger prices those calls through this helper so
+ * the 50% saving is *accounted*, not just asserted.
+ */
+export const BATCH_DISCOUNT_MULTIPLIER = 0.5 as const;
+
+/** Cost of one call submitted via the Batch API (50% off the synchronous price). */
+export function batchCostOfUsage(usage: ModelUsage, modelId: string): number {
+  return costOfUsage(usage, modelId) * BATCH_DISCOUNT_MULTIPLIER;
+}
+
+/**
+ * A representative single-tick usage, used ONLY to *project* the marginal cost of
+ * one more model call (the escalation headroom guard, below). It is intentionally
+ * conservative — mostly uncached input + a modest output — so the guard errs toward
+ * refusing an escalation when headroom is thin rather than breaching the hard cap.
+ */
+export const NOMINAL_TICK_USAGE: ModelUsage = {
+  inputTokens: 12_000,
+  outputTokens: 2_000,
+  cacheReadInputTokens: 0,
+  cacheCreationInputTokens: 0,
+};
+
+/**
+ * Project the marginal USD cost of one more call at `modelId` (defaults to a
+ * conservative nominal tick). The engine's escalation guard compares this against
+ * remaining headroom so a capability bump can never push a loop past its hard cap.
+ */
+export function estimateCallCostUsd(modelId: string, usage: ModelUsage = NOMINAL_TICK_USAGE): number {
+  return costOfUsage(usage, modelId);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Caps, state, and signals
 // ─────────────────────────────────────────────────────────────────────────────
@@ -166,6 +202,20 @@ export function actionFor(state: BudgetState): CapAction {
     case 'ok':
       return 'ok';
   }
+}
+
+/** Severity order so the STRICTER of two cap actions can be chosen. */
+const CAP_ACTION_SEVERITY: Readonly<Record<CapAction, number>> = { ok: 0, downgrade: 1, pause: 2 };
+
+/**
+ * The stricter of two cap actions (`pause` > `downgrade` > `ok`). A loop lives
+ * under BOTH its own cap and the org-wide rollup cap; the engine takes the stricter
+ * — so an org hard-cap breach pauses a loop that is itself only at its soft cap,
+ * and the org soft cap downgrades a loop still nominally `ok`. This is the
+ * structural form of "org-wide hard cap" enforcement from Phase 4.
+ */
+export function stricterAction(a: CapAction, b: CapAction): CapAction {
+  return CAP_ACTION_SEVERITY[a] >= CAP_ACTION_SEVERITY[b] ? a : b;
 }
 
 /**
@@ -318,7 +368,13 @@ export class BudgetLedger {
    */
   orgStatus(orgId: string): BudgetStatus {
     const spentUsd = this.store.loopsForOrg(orgId).reduce((sum, row) => sum + row.spentUsd, 0);
-    const caps = this.orgCaps.get(orgId) ?? { softCapUsd: 0, hardCapUsd: 0 };
+    const caps = this.orgCaps.get(orgId);
+    // An UNREGISTERED org (or a zero hard cap) means "no org-wide cap" → always `ok`.
+    // Without this, every loop that merely scopes an orgId would read `hard` (spend ≥ 0)
+    // and pause — the org cap must only bite when explicitly registered with a real cap.
+    if (!caps || caps.hardCapUsd <= 0) {
+      return { spentUsd, softCapUsd: 0, hardCapUsd: 0, state: 'ok' };
+    }
     return {
       spentUsd,
       softCapUsd: caps.softCapUsd,
@@ -339,5 +395,26 @@ export class BudgetLedger {
   /** The cap signal for the org rollup. */
   checkOrgCap(orgId: string): CapAction {
     return actionFor(this.orgStatus(orgId).state);
+  }
+
+  /**
+   * Remaining USD before the loop's HARD cap (`hardCap − spent`, floored at 0). A
+   * hard cap of 0 means "uncapped" for the purpose of this guard and returns
+   * `Infinity` — note that is distinct from {@link checkCap}, where a 0 hard cap
+   * trips immediately; headroom is consulted only for the escalation projection,
+   * which must not divide a real budget by an unset cap.
+   */
+  headroomUsd(loopId: string): number {
+    const row = this.store.getLoop(loopId);
+    if (!row || row.hardCapUsd <= 0) return Number.POSITIVE_INFINITY;
+    return Math.max(0, row.hardCapUsd - row.spentUsd);
+  }
+
+  /** Remaining USD before the ORG-wide hard cap (`Infinity` when the org is uncapped). */
+  orgHeadroomUsd(orgId: string): number {
+    const caps = this.orgCaps.get(orgId);
+    if (!caps || caps.hardCapUsd <= 0) return Number.POSITIVE_INFINITY;
+    const spentUsd = this.store.loopsForOrg(orgId).reduce((sum, row) => sum + row.spentUsd, 0);
+    return Math.max(0, caps.hardCapUsd - spentUsd);
   }
 }
