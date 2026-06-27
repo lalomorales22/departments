@@ -431,7 +431,7 @@ DEPARTMENTS_PROVIDER=ollama OLLAMA_MODEL=gemma4:12b-it-qat \
 
 ```bash
 docker compose up -d        # Postgres(+pgvector), Redis, Temporal, MinIO
-pnpm db:migrate             # schema + RLS policies
+pnpm db:migrate             # apply sql/ (schema + RLS) — NOTE: the runner is still a stub; wire one first
 pnpm dev:all                # FULL stack: web (Next.js) + gateway (NestJS) + orchestrator (Temporal)
 # (`pnpm dev` alone is cockpit-only — the gateway/orchestrator are gated and need the stack above.)
 # Set ANTHROPIC_API_KEY for Claude; USE_CMA_RUNTIME=1 for Managed Agents.
