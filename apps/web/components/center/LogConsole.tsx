@@ -118,6 +118,7 @@ export function LogConsole({ loopId }: { loopId: string }) {
   // after the fixture backlog, so "run a loop" shows raw phase progression live.
   const liveEvents = useRealtime((s) => s.liveEvents[loopId]);
   const runStatus = useRealtime((s) => s.runStatus[loopId]);
+  const running = runStatus === 'running';
 
   const events = useMemo(() => {
     const kinds = TAB_KINDS[logTab];
@@ -254,8 +255,23 @@ export function LogConsole({ loopId }: { loopId: string }) {
             {events.map((ev, i) => {
               const { label, accent } = lineTag(ev);
               const last = i === events.length - 1;
+              // The live edge: tint the newest line while a run is streaming so the eye
+              // lands on the freshest output as it auto-scrolls in.
+              const liveEdge = last && running;
               return (
-                <li key={ev.id} className="flex items-baseline gap-2 tabular">
+                <li
+                  key={ev.id}
+                  className={cn(
+                    '-mx-1 flex items-baseline gap-2 rounded-sm px-1 tabular',
+                    liveEdge && 'animate-fade-in',
+                  )}
+                  style={
+                    liveEdge
+                      ? { backgroundColor: 'color-mix(in oklab, var(--accent-green) 8%, transparent)' }
+                      : undefined
+                  }
+                >
+
                   <span className="shrink-0 select-none text-faint">{clock(ev.ts)}</span>
                   <span
                     className={cn('w-10 shrink-0 select-none text-right', accent === null && 'text-muted')}

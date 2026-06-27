@@ -142,6 +142,11 @@ export abstract class CompletionLoopRuntime implements LoopAgentRuntime {
     const ctx = this.sessions.get(s.sessionId);
     const callModel = ctx?.callModel ?? this.resolveCallModel(s.modelId, s.role);
     const e = this.emitter(s, 'evaluate', emit);
+    // Light up the EVALUATE stage in the live pipeline (parity with the CMA runtime).
+    // The grader call itself is non-streaming, so without this transition the cockpit
+    // would leave EXECUTE marked active straight through grading and the pipeline would
+    // appear to skip EVALUATE entirely.
+    e.status('running', 'evaluate');
     e.log('info', `EVALUATE · independent grader (${callModel}) · pass ${req.iteration} · ${req.targetSummary}`, 'grader');
 
     const evidence = await readEvidence(req.workspaceDir);

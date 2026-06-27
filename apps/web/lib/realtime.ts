@@ -11,6 +11,7 @@ import {
   type ResumeState,
 } from '@departments/realtime';
 import { useCockpit } from './store';
+import { useLoopRegistry } from './loops-client';
 import { toast } from './toast';
 
 export type RunStatus = 'idle' | 'running' | 'done' | 'error' | 'paused';
@@ -40,6 +41,10 @@ interface RealtimeState {
   lastSeq: Record<string, number>;
   /** AUTO vs manual single-STEP run mode per loop. */
   mode: Record<string, RunMode>;
+  /** Requested cycle count (M) for the current/last run — drives "cycle N of M". */
+  runCycles: Record<string, number>;
+  /** Absolute loop cycle the current run started after (N = engine cycle − base). */
+  runBaseCycle: Record<string, number>;
 
   /** Open (or refresh) the live subscription for a loop. Idempotent. */
   connect: (loopId: string) => void;
@@ -153,6 +158,8 @@ export const useRealtime = create<RealtimeState>((set, get) => {
     activePhase: {},
     lastSeq: {},
     mode: {},
+    runCycles: {},
+    runBaseCycle: {},
 
     connect: (loopId) => {
       let conn = conns.get(loopId);
@@ -191,10 +198,18 @@ export const useRealtime = create<RealtimeState>((set, get) => {
 
     runLoop: async (loopId, opts) => {
       const mode = opts?.mode ?? get().mode[loopId] ?? 'auto';
+      const cycles = opts?.cycles ?? 1;
+      // Snapshot the loop's current absolute cycle so the pipeline can show "cycle N of M"
+      // for a multi-cycle run (N = the engine's absolute cycle − this base).
+      const baseCycle = useLoopRegistry.getState().loops.find((l) => l.id === loopId)?.cycleCount ?? 0;
       // Ensure we're subscribed before the run produces events.
       get().connect(loopId);
-      set((s) => ({ runStatus: { ...s.runStatus, [loopId]: 'running' } }));
-      const params = new URLSearchParams({ mode, cycles: String(opts?.cycles ?? 1) });
+      set((s) => ({
+        runStatus: { ...s.runStatus, [loopId]: 'running' },
+        runCycles: { ...s.runCycles, [loopId]: cycles },
+        runBaseCycle: { ...s.runBaseCycle, [loopId]: baseCycle },
+      }));
+      const params = new URLSearchParams({ mode, cycles: String(cycles) });
       if (opts?.stall) params.set('stall', '1');
       if (opts?.approvals) params.set('approvals', '1');
       // Forward the user's provider selection so the spawned engine uses the chosen

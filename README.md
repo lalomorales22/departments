@@ -5,7 +5,7 @@
 
 Departments is an orchestration platform that turns any business function, product, or project into a self-improving **Loop** — an autonomous department of AI agents that owns a mission and runs a perpetual **PLAN → EXECUTE → EVALUATE → IMPROVE → MEMORY** cycle. A top-level `loop ceo` supervises every department, so the whole organization becomes a recursive tree of loops — *loops all the way down*.
 
-> **Status:** **It runs for real — locally, with no cloud and no Docker.** A loop now genuinely *thinks*: a pluggable **agent runtime** drives each PLAN → EXECUTE → EVALUATE → IMPROVE → MEMORY cycle on a real model — a **local Ollama** model (default, $0, runs on your own hardware), the **Claude Messages API**, or a deterministic offline runtime. The cockpit runs on real, **SQLite‑persisted** data (loops, runs, event history that survives restart) — the demo fixtures are gone; `loop <name>` creates a real department, you pick the model in **Settings → AI Provider**, and live **cost/token meters** tick as it works.
+> **Status:** **It runs for real — locally, with no cloud and no Docker.** A loop now genuinely *thinks*: a pluggable **agent runtime** drives each PLAN → EXECUTE → EVALUATE → IMPROVE → MEMORY cycle on a real model — a **local Ollama** model (default, $0, runs on your own hardware), the **Claude Messages API**, or a deterministic offline runtime. The cockpit runs on real, **SQLite‑persisted** data (loops, runs, event history that survives restart) — the demo fixtures are gone; `loop <name>` creates a real department, you pick the model in **Settings → AI Provider**, and live **cost/token meters** tick as the **pipeline visibly advances** through each phase.
 >
 > Underneath, all five phases of the [5‑phase plan](./TASKS.md) are complete (Foundations · The Loop Engine · The Live Dashboard · Hierarchy & Meta‑Loop · Production Hardening): the four gates are **enforced** (Health % = rolling gate‑pass rate), a CEO meta‑loop coordinates a guarded tree of child loops, the cost suite is finalized, and history is append‑only/tamper‑evident with alerting + multi‑role RBAC + per‑org security. The prod data plane (Postgres/pgvector · Temporal · Redis · CMA Vaults) is authored and gated behind Docker/creds. The repo is itself a `loop software-builder` — its current memory lives in [`HANDOFF.md`](./HANDOFF.md) (read it first), with `README.md` + `TASKS.md` as the founding spec.
 
@@ -338,6 +338,7 @@ A dark **command‑center** dashboard ("ORCHESTRATE EVERYTHING") — an ops floo
 - **`loop <name>` creates a real department** — persisted to the local SQLite store and added to the hierarchy tree. An empty workspace shows an honest "create your first department" state, not seeded mock data.
 - **Settings → AI Provider** — choose **Ollama** (with a live dropdown of the models installed on your machine, populated from the daemon's `/api/tags`) or **Claude** (with an API‑key field). A **provider/model badge** in the loop header always says what's actually executing.
 - **Live Cost/Tokens meters** in the header tick as the engine streams `cost_usd`/`tokens` metrics; the same feed drives the dashboard sparkline cards. **Health %** is the real rolling gate‑pass rate, not a constant.
+- **Live run feedback** — when a loop runs, the **Loop Pipeline** visibly advances `PLAN → EXECUTE → EVALUATE → OPTIMIZE → MEMORY`: the active stage fills/pulses, completed stages read complete, and a thin **"phase n of 5"** bar tracks overall progress. A status strip under the pipeline surfaces the active phase, the **latest streamed line**, and a ticking **elapsed + token** readout — so a running loop is never mistaken for an idle one — and the newest console line is highlighted as it streams in.
 - **Toasts** give real success/error feedback (department created, run failed, schedule saved) instead of silent failures. The **SSE connection dot** in the status bar shows live/reconnecting/stale.
 - The Inspector reads **real artifacts + distilled memory** from the loop's git working tree once it has run.
 
@@ -406,7 +407,7 @@ The fastest real loop is **fully local** — no cloud, no Docker, no API key:
 pnpm install
 # Optional but recommended — install Ollama (https://ollama.com) and pull a model:
 #   ollama pull gemma4:12b-it-qat      # a tool-capable instruction model loops well
-pnpm --filter @departments/web dev     # the cockpit at http://localhost:3000
+pnpm dev                               # the cockpit (web only) at http://localhost:3000
 ```
 
 Then, in the cockpit:
@@ -431,7 +432,8 @@ DEPARTMENTS_PROVIDER=ollama OLLAMA_MODEL=gemma4:12b-it-qat \
 ```bash
 docker compose up -d        # Postgres(+pgvector), Redis, Temporal, MinIO
 pnpm db:migrate             # schema + RLS policies
-pnpm dev                    # web (Next.js) + gateway (NestJS) + orchestrator (Temporal)
+pnpm dev:all                # FULL stack: web (Next.js) + gateway (NestJS) + orchestrator (Temporal)
+# (`pnpm dev` alone is cockpit-only — the gateway/orchestrator are gated and need the stack above.)
 # Set ANTHROPIC_API_KEY for Claude; USE_CMA_RUNTIME=1 for Managed Agents.
 ```
 
@@ -439,7 +441,7 @@ pnpm dev                    # web (Next.js) + gateway (NestJS) + orchestrator (T
 
 ## Roadmap
 
-Build was sequenced into five demoable, de‑risking phases, plus a **local‑first real‑data** pass that made it run for real — full detail in **[TASKS.md](./TASKS.md)**:
+Build was sequenced into five demoable, de‑risking phases, plus a **local‑first real‑data** pass that made it run for real — now continuing into a **UX & information‑architecture** track. Full detail in **[TASKS.md](./TASKS.md)**:
 
 1. ✅ **Foundations** — monorepo, design system, mission‑control shell, data model + RLS, auth, mock realtime, frozen `Event` protocol, cost‑ledger & cache seams.
 2. ✅ **The Loop Engine** — one loop runs a full real cycle: agent roster, artifacts/Git, independent grader, model tiering + caching, budget enforcement (over the `LoopAgentRuntime` seam).
@@ -447,6 +449,7 @@ Build was sequenced into five demoable, de‑risking phases, plus a **local‑fi
 4. ✅ **Hierarchy & Meta‑Loop** — L1–L4 trees, CEO coordination (Batch reviews), scheduling, rolled‑up health; concurrency/cadence + irreversible‑action gating + org‑wide cap enforced here.
 5. ✅ **Production Hardening** — the four gates **enforced** (Health % = rolling gate‑pass rate), full cost suite (caching audit + Fable‑5 cost gate + per‑org budget dashboard), append‑only tamper‑evident history, alerting, multi‑tenancy/RBAC + multi‑role UI, prod K8s + launch runbooks.
 6. ✅ **Local AI + Real Data** — the loop actually **thinks**: pluggable agent runtimes (**Ollama** local · **Claude** Messages API · Fake · CMA) behind the one seam, with the `$0` `ollama-local` sentinel for correct local billing; a **Settings → AI Provider** picker (live Ollama model dropdown / Claude key); **SQLite‑persisted** loops + event history; all demo fixtures removed for honest empty‑states; live **cost/token meters** + **toasts**. The durable Temporal path shares the same provider selection.
+7. ✅ **Live Run Feedback** *(UX track)* — a running loop is now legible: the Loop Pipeline visibly advances with per‑phase progress + a **"phase n of 5"** bar, the active stage pulses, **EVALUATE** lights up as its own stage, and the latest streamed line + a ticking elapsed/token readout sit in a status strip under the pipeline (newest console line highlighted live). *Next in the track: IA — org dashboard ↔ per‑loop workspace; then real members & integrations.*
 
 ---
 

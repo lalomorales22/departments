@@ -9,13 +9,21 @@ import {
   Database,
   Rocket,
   ShieldCheck,
+  StepForward,
+  Timer,
   type LucideIcon,
 } from 'lucide-react';
-import { StepForward } from 'lucide-react';
 import { accentVar, glowVar } from '@/lib/status-theme';
-import { useLivePipeline, useRunMode, useRunStatus } from '@/lib/live';
+import {
+  useLiveActivity,
+  useLivePipeline,
+  useLiveUsage,
+  useRunCycleInfo,
+  useRunMode,
+  useRunStatus,
+} from '@/lib/live';
 import { useRealtime } from '@/lib/realtime';
-import { SectionLabel } from '@/components/atoms';
+import { SectionLabel, TimerDisplay } from '@/components/atoms';
 import { cn } from '@/lib/cn';
 
 /** Stage icon keyed by engine phase (improve === OPTIMIZE). */
@@ -29,17 +37,46 @@ const STAGE_ICON: Record<CyclePhase, LucideIcon> = {
 
 type StageStatus = 'pending' | 'active' | 'complete' | 'error';
 
+/** Compact token count (e.g. 842, 1.2k, 3.4M). */
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return `${n}`;
+}
+
 /** The signature lifecycle visualizer: PLAN → EXECUTE → EVALUATE → OPTIMIZE → MEMORY. */
 export function LoopPipeline({ loopId }: { loopId: string }) {
   const pipeline = useLivePipeline(loopId);
   const mode = useRunMode(loopId);
   const runStatus = useRunStatus(loopId);
+  const activity = useLiveActivity(loopId);
+  const usage = useLiveUsage(loopId);
+  const { total: cycleTotal, base: cycleBase } = useRunCycleInfo(loopId);
   const setMode = useRealtime((s) => s.setMode);
   const step = useRealtime((s) => s.step);
 
   const auto = mode === 'auto';
+  const running = runStatus === 'running';
+  const done = runStatus === 'done';
   // In manual STEP mode, an active run waits for an explicit advance.
-  const canStep = mode === 'step' && runStatus === 'running';
+  const canStep = mode === 'step' && running;
+
+  // Where we are in the five-stage cycle — drives the overall progress bar + "phase n of 5".
+  const activeIdx = pipeline.activePhase
+    ? PIPELINE.findIndex((s) => s.phase === pipeline.activePhase)
+    : -1;
+  const activeStage = activeIdx >= 0 ? PIPELINE[activeIdx] : null;
+  const activeColor = activeStage ? accentVar(activeStage.accent) : accentVar('green');
+  const phaseNum = activeIdx >= 0 ? activeIdx + 1 : done ? PIPELINE.length : 0;
+  // The in-progress phase counts as half-done so the bar advances within a stage, not just
+  // at the boundary; a finished cycle reads 100%.
+  const overallPct = done ? 100 : activeIdx >= 0 ? ((activeIdx + 0.5) / PIPELINE.length) * 100 : 0;
+  const showOverall = running || done;
+
+  // "Cycle N of M" for a multi-cycle run (N = the engine's absolute cycle − the run's base);
+  // otherwise the absolute cycle counter.
+  const cycleN = Math.min(cycleTotal, Math.max(1, pipeline.cycleCount - cycleBase));
+  const showCycleOfM = cycleTotal > 1 && (running || done);
 
   return (
     <div className="flex flex-col gap-3 px-4 py-3">
@@ -47,7 +84,7 @@ export function LoopPipeline({ loopId }: { loopId: string }) {
         right={
           <>
             <span className="tabular text-2xs text-muted" data-machine>
-              CYCLE #{pipeline.cycleCount}
+              {showCycleOfM ? `CYCLE ${cycleN}/${cycleTotal}` : `CYCLE #${pipeline.cycleCount}`}
             </span>
             {canStep && (
               <button
@@ -85,6 +122,25 @@ export function LoopPipeline({ loopId }: { loopId: string }) {
         Loop Pipeline
       </SectionLabel>
 
+      {/* Overall cycle progress: "phase n of 5" + a thin determinate bar across the pipeline. */}
+      {showOverall && (
+        <div className="flex items-center gap-3">
+          <span className="eyebrow shrink-0" data-machine>
+            {phaseNum >= 1 ? `phase ${phaseNum} of ${PIPELINE.length}` : 'starting'}
+          </span>
+          <div className="h-1 flex-1 overflow-hidden rounded-full bg-surface-3">
+            <div
+              className="h-full rounded-full"
+              style={{
+                width: `${overallPct}%`,
+                backgroundColor: done ? accentVar('green') : activeColor,
+                transition: 'width 0.5s ease-out',
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       <ol className="flex items-stretch">
         {PIPELINE.map((stage, i) => {
           const status: StageStatus = pipeline.stageStatus[stage.phase] ?? 'pending';
@@ -92,7 +148,8 @@ export function LoopPipeline({ loopId }: { loopId: string }) {
           const color = accentVar(stage.accent);
           const isActive = status === 'active';
           const isComplete = status === 'complete';
-          const isPending = status === 'pending' || status === 'error';
+          const isError = status === 'error';
+          const isPending = status === 'pending' || isError;
 
           return (
             <li key={stage.phase} className="flex min-w-0 flex-1 items-start">
@@ -130,7 +187,7 @@ export function LoopPipeline({ loopId }: { loopId: string }) {
                 title={`${stage.label}\nconsumes: ${stage.consumes}\nproduces: ${stage.produces}`}
                 className={cn(
                   'group flex min-w-0 flex-[2] flex-col gap-1.5 rounded-md border bg-surface p-2.5 transition-colors',
-                  isActive ? 'border-hairline-strong animate-pulse' : 'border-hairline',
+                  isActive ? 'border-hairline-strong' : 'border-hairline',
                 )}
                 style={
                   isActive
@@ -170,10 +227,15 @@ export function LoopPipeline({ loopId }: { loopId: string }) {
                   )}
                   {isActive && (
                     <span
-                      className="tabular text-2xs uppercase tracking-wider"
+                      className="tabular inline-flex items-center gap-1 text-2xs uppercase tracking-wider"
                       style={{ color }}
                       data-machine
                     >
+                      <span
+                        className="inline-block h-1.5 w-1.5 animate-pulse-dot rounded-full"
+                        style={{ backgroundColor: color }}
+                        aria-hidden
+                      />
                       LIVE
                     </span>
                   )}
@@ -199,11 +261,84 @@ export function LoopPipeline({ loopId }: { loopId: string }) {
                 >
                   {stage.blurb}
                 </span>
+
+                {/* Per-stage progress track: complete = filled, active = indeterminate
+                    shimmer (we can't know a phase's total work), error = red, else empty. */}
+                <div
+                  className="relative mt-0.5 h-[3px] w-full overflow-hidden rounded-full bg-surface-3"
+                  aria-hidden
+                >
+                  {isComplete && (
+                    <div
+                      className="absolute inset-0 rounded-full"
+                      style={{ backgroundColor: color, opacity: 0.55 }}
+                    />
+                  )}
+                  {isActive && (
+                    <>
+                      <div
+                        className="absolute inset-0 rounded-full"
+                        style={{ backgroundColor: `color-mix(in oklab, ${color} 28%, transparent)` }}
+                      />
+                      <div
+                        className="absolute inset-0 animate-scan rounded-full"
+                        style={{ background: `linear-gradient(90deg, transparent 0%, ${color} 50%, transparent 100%)` }}
+                      />
+                    </>
+                  )}
+                  {isError && (
+                    <div
+                      className="absolute inset-0 rounded-full"
+                      style={{ backgroundColor: accentVar('red'), opacity: 0.6 }}
+                    />
+                  )}
+                </div>
               </div>
             </li>
           );
         })}
       </ol>
+
+      {/* "Running" strip: makes an active run unmistakably alive — the live phase, the latest
+          streamed line, and a ticking elapsed + token meter, right under the pipeline. */}
+      {running && (
+        <div
+          className="flex items-center gap-3 rounded-md border bg-surface px-3 py-1.5"
+          style={{ borderColor: `color-mix(in oklab, ${activeColor} 30%, var(--border))` }}
+          aria-live="polite"
+        >
+          <span
+            className="tabular inline-flex shrink-0 items-center gap-1.5 text-2xs uppercase tracking-wider"
+            style={{ color: activeColor }}
+            data-machine
+          >
+            <span
+              className="inline-block h-1.5 w-1.5 animate-pulse-dot rounded-full"
+              style={{ backgroundColor: activeColor }}
+              aria-hidden
+            />
+            {activeStage ? activeStage.label : 'STARTING'}
+          </span>
+
+          <span
+            className="min-w-0 flex-1 truncate font-mono text-2xs text-muted"
+            title={activity.lastLine ?? undefined}
+          >
+            {activity.lastLine ?? 'warming up…'}
+          </span>
+
+          <span
+            className="tabular inline-flex shrink-0 items-center gap-3 text-2xs text-muted"
+            data-machine
+          >
+            <span className="inline-flex items-center gap-1">
+              <Timer className="h-3 w-3 text-faint" strokeWidth={2} aria-hidden />
+              <TimerDisplay startSeconds={pipeline.elapsedSeconds} running />
+            </span>
+            <span style={{ color: accentVar('green') }}>{fmtTokens(usage.tokens)} tok</span>
+          </span>
+        </div>
+      )}
     </div>
   );
 }

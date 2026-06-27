@@ -30,6 +30,13 @@ export function useRunMode(loopId: string) {
   return useRealtime((s) => s.mode[loopId] ?? 'auto');
 }
 
+/** Run-scoped cycle context: M (requested cycles) + the absolute cycle the run started after. */
+export function useRunCycleInfo(loopId: string): { total: number; base: number } {
+  const total = useRealtime((s) => s.runCycles[loopId] ?? 1);
+  const base = useRealtime((s) => s.runBaseCycle[loopId] ?? 0);
+  return { total, base };
+}
+
 /** True once any real event has streamed for this loop. */
 export function useHasLive(loopId: string): boolean {
   return useRealtime((s) => (s.liveEvents[loopId]?.length ?? 0) > 0);
@@ -83,12 +90,55 @@ export function useLivePipeline(loopId: string): PipelineState {
   }, [events, activePhase, runStatus, loopId, loopCycleCount]);
 }
 
+/**
+ * Seconds since the START OF THE MOST RECENT RUN. Live events accumulate across runs within
+ * a session, so anchoring to `events[0]` would inflate elapsed on a 2nd+ run; instead we
+ * anchor to the first event of the latest run (by runId — the engine mints one per cycle),
+ * so the header timer reads the current run's duration, not the session's.
+ */
 function elapsedFrom(events: DeptEvent[]): number {
-  const first = events[0];
-  if (!first) return 0;
-  const start = new Date(first.ts).getTime();
+  let runId: string | undefined;
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    if (events[i]?.runId) {
+      runId = events[i]!.runId;
+      break;
+    }
+  }
+  const anchor = runId ? events.find((e) => e.runId === runId) : events[0];
+  if (!anchor) return 0;
+  const start = new Date(anchor.ts).getTime();
   if (Number.isNaN(start)) return 0;
   return Math.max(0, Math.floor((Date.now() - start) / 1000));
+}
+
+/**
+ * The latest human-readable line from the live feed — the newest streamed `output`, else the
+ * newest `agent_msg`/`log`. Drives the pipeline's "Running" strip so an active loop always
+ * shows a moving line of what it's doing. EVALUATE's grader is non-streaming, so the fallback
+ * to log/agent_msg keeps the line fresh even when no output deltas are arriving.
+ */
+export function useLiveActivity(loopId: string): { lastLine: string | null } {
+  const events = useRealtime((s) => s.liveEvents[loopId]);
+  return useMemo(() => {
+    if (!events) return { lastLine: null };
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const e = events[i];
+      if (!e) continue;
+      let text: string | null = null;
+      if (e.kind === 'output') text = e.payload.text;
+      else if (e.kind === 'agent_msg') text = e.payload.message;
+      else if (e.kind === 'log') text = e.payload.message;
+      if (text) {
+        const line = text
+          .split('\n')
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .pop();
+        if (line) return { lastLine: line };
+      }
+    }
+    return { lastLine: null };
+  }, [events]);
 }
 
 // ── Agents ────────────────────────────────────────────────────────────────────
