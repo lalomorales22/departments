@@ -5,7 +5,9 @@
 
 Departments is an orchestration platform that turns any business function, product, or project into a self-improving **Loop** — an autonomous department of AI agents that owns a mission and runs a perpetual **PLAN → EXECUTE → EVALUATE → IMPROVE → MEMORY** cycle. A top-level `loop ceo` supervises every department, so the whole organization becomes a recursive tree of loops — *loops all the way down*.
 
-> **Status:** **All five phases of the [5‑phase plan](./TASKS.md) are complete** (Foundations · The Loop Engine · The Live Dashboard · Hierarchy & Meta‑Loop · Production Hardening). A real loop runs full cycles on the engine and drives the cockpit live; a CEO meta‑loop coordinates a guarded tree of child loops; and the platform is hardened — the four gates are **enforced** guardrails (Health % = rolling gate‑pass rate), the cost suite is finalized, history is append‑only/tamper‑evident, alerting + multi‑role RBAC + per‑org security are live, and prod K8s + launch runbooks are authored. Docker/CMA paths are gated behind creds. The repo is itself a `loop software-builder` — its current memory lives in [`HANDOFF.md`](./HANDOFF.md) (read it first), with `README.md` + `TASKS.md` as the founding spec.
+> **Status:** **It runs for real — locally, with no cloud and no Docker.** A loop now genuinely *thinks*: a pluggable **agent runtime** drives each PLAN → EXECUTE → EVALUATE → IMPROVE → MEMORY cycle on a real model — a **local Ollama** model (default, $0, runs on your own hardware), the **Claude Messages API**, or a deterministic offline runtime. The cockpit runs on real, **SQLite‑persisted** data (loops, runs, event history that survives restart) — the demo fixtures are gone; `loop <name>` creates a real department, you pick the model in **Settings → AI Provider**, and live **cost/token meters** tick as it works.
+>
+> Underneath, all five phases of the [5‑phase plan](./TASKS.md) are complete (Foundations · The Loop Engine · The Live Dashboard · Hierarchy & Meta‑Loop · Production Hardening): the four gates are **enforced** (Health % = rolling gate‑pass rate), a CEO meta‑loop coordinates a guarded tree of child loops, the cost suite is finalized, and history is append‑only/tamper‑evident with alerting + multi‑role RBAC + per‑org security. The prod data plane (Postgres/pgvector · Temporal · Redis · CMA Vaults) is authored and gated behind Docker/creds. The repo is itself a `loop software-builder` — its current memory lives in [`HANDOFF.md`](./HANDOFF.md) (read it first), with `README.md` + `TASKS.md` as the founding spec.
 
 ---
 
@@ -196,7 +198,16 @@ Backing these: a per‑loop and per‑org **budget ledger** (soft cap → auto�
 
 ## Architecture
 
-The dominant bet: **build the agent runtime on Anthropic Managed Agents (CMA)** — which gives us a secure, stateful, file‑capable sandbox with streaming, caching, and compaction for free — and own only the orchestration, real‑time, product, and cost‑control layers around it.
+The load‑bearing design choice: keep **all** model access behind ONE `agent-runtime` seam (the `LoopAgentRuntime` contract) so the orchestration engine never calls a model directly. That seam is now **real and pluggable** — the same four‑method contract is satisfied by four providers, and the choice is a deployment detail, not an architectural fork:
+
+| Provider | What it is | When |
+|---|---|---|
+| **Ollama** (`OllamaRuntime`) | A model on the user's own machine via the local Ollama daemon — streamed, **$0**, no key, no Docker | **Default for local.** The fastest path to a real, running loop |
+| **Claude** (`ClaudeRuntime`) | The Anthropic **Messages API**, direct (no SDK) — per‑role model tiering or one pinned model | Cloud quality; needs an `ANTHROPIC_API_KEY` |
+| **Fake** (`FakeCmaRuntime`) | A deterministic, network‑free runtime that writes real artifacts | Offline demos + the engine's own tests |
+| **CMA** (`CmaRuntime`) | **Anthropic Managed Agents** — a secure, stateful, file‑capable cloud sandbox with streaming/caching/compaction | The prod/multi‑tenant target (gated behind creds) |
+
+The orchestration, real‑time, product, and cost‑control layers are owned around that seam. The original bet was to build it on **CMA** (below); the local **Ollama**/**Claude** runtimes realize the same contract today so the platform is useful and demoable with zero cloud.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -229,6 +240,8 @@ The dominant bet: **build the agent runtime on Anthropic Managed Agents (CMA)** 
    Claude Messages + Batch API                  GitHub · Slack · Drive · …
 ```
 
+> The diagram shows the **prod (CMA) target**. Today the **AGENT RUNTIME** box is whichever provider you select — locally an `OllamaRuntime` (talking to `localhost:11434`) or a `ClaudeRuntime` (the Messages API), and **PERSISTENCE** is a local **SQLite** file instead of Postgres. The boundaries are identical; only the adapters differ.
+
 ### Tech stack (defaults)
 
 | Layer | Choice | Why |
@@ -237,11 +250,12 @@ The dominant bet: **build the agent runtime on Anthropic Managed Agents (CMA)** 
 | Terminal / charts | **xterm.js**, **uPlot/visx** | High‑throughput log pane; cheap live sparklines |
 | Backend | **Node.js + NestJS** | Shared TS types with the front end; first‑class `@anthropic-ai/sdk`; strong SSE/WS |
 | Orchestration | **Temporal** (durable workflows) | "Runs indefinitely" = durable timers/signals/replay that survive restarts |
-| Primary DB | **PostgreSQL** (+ **pgvector**) | Relational loop hierarchy + RLS multi‑tenancy + co‑located memory search |
+| Primary DB (prod) | **PostgreSQL** (+ **pgvector**) | Relational loop hierarchy + RLS multi‑tenancy + co‑located memory search |
+| Local store | **SQLite** (`node:sqlite`, single file in `.volumes/`) | The local cockpit's REAL store for loops + event history — survives restart, no Docker. Postgres is the multi‑tenant/prod path |
 | Object storage | **S3 / Cloudflare R2** | Versioned artifact blobs + run‑log archives |
 | Eventing | **Redis Streams** | Tick dispatch + per‑loop append‑only event stream with replay‑from‑offset |
-| Realtime | **WebSocket** (browser) ← **SSE** (from CMA) | Terminate CMA SSE server‑side, multiplex one WS to the UI |
-| Agent runtime | **Managed Agents** (cloud; `self_hosted` for regulated tenants) | Per‑session container = artifact/code home; Anthropic runs the loop/caching/compaction |
+| Realtime | **WebSocket** (browser) ← **SSE** | Terminate the engine's SSE server‑side, multiplex one WS to the UI |
+| Agent runtime | **Pluggable behind one seam** — Ollama (local, default, $0) · Claude Messages API · Fake (offline) · Managed Agents (cloud, gated) | The engine holds only a `LoopAgentRuntime`; the provider is a deployment choice, not a fork |
 | Artifacts VCS | **Git** (per‑loop repo, CMA repo mounts) | Files‑as‑memory wants real diffs, blame, history |
 | Auth | Clerk/Auth0/WorkOS + org RBAC + **Postgres RLS** | Outsource identity; enforce tenant isolation at the row |
 | Secrets | **CMA Vaults** (agent creds) + cloud **KMS** (platform) | Creds injected at egress, never visible in the sandbox |
@@ -260,16 +274,20 @@ The dominant bet: **build the agent runtime on Anthropic Managed Agents (CMA)** 
 | Credentials | **Vaults** (egress injection) |
 | Live terminal/logs + agent status | Session **SSE** event stream |
 
-> The engine never calls Claude directly. A single `agent-runtime` package owns all model access behind `startSession / sendEvents / streamEvents / defineOutcome`, so the **CMA‑vs‑self‑hosted** choice is a deployment detail, not an architectural one.
+> The engine never calls a model directly — it holds only a `LoopAgentRuntime` (`startSession / executePhase / evaluate / endSession`). A single `agent-runtime` package owns all model access, so the **provider choice — Ollama · Claude · Fake · CMA** — is a deployment detail, not an architectural one. (The CMA‑native `AgentRuntime` primitive — `sessions`/`outcomes` — sits beneath this for the managed‑cloud path.)
 
 ---
 
 ## The AI layer & model tiering
 
-Default model + effort per role. **Read the caveats — several knobs error on the wrong model.**
+The provider is chosen in **Settings → AI Provider** (or via env on the CLI/worker). Two worlds:
+
+- **Local (Ollama).** Every role runs the **one local model you pick**, billed as the knobless **`ollama-local`** sentinel at **$0**. No effort/thinking params are sent; thinking‑capable models are called with `think:false` so they return the answer (artifacts), not the chain‑of‑thought. This is the default and needs no key, no cloud, no Docker. The model name (e.g. `gemma4:12b-it-qat`) rides on the runtime; the closed `ModelId` union stays Claude‑shaped.
+- **Claude.** The per‑role tiering below applies (or pin one model). **Read the caveats — several knobs error on the wrong model.**
 
 | Role / level | Model | Model ID | Context | Thinking | Effort | $/1M (in · out) |
 |---|---|---|---|---|---|---|
+| Local (any role, Ollama) | your installed model | `ollama-local` *(sentinel)* | model‑dependent | — (knobless) | — (omit) | **$0** |
 | CEO meta‑loop · Planner · Reviewer/grader | Claude Opus 4.8 | `claude-opus-4-8` | 1M | adaptive | `high` (default); `xhigh` for hard agentic | $5 · $25 |
 | Hardest strategy / greenfield (gated) | Claude Fable 5 | `claude-fable-5` | 1M | always‑on (omit param) | `xhigh` / `max` | $10 · $50 |
 | Executor agents (dev, content, SEO, analyst) | Claude Sonnet 4.6 | `claude-sonnet-4-6` | 1M | adaptive | `medium`→`high` (ceiling `max`) | $3 · $15 |
@@ -289,6 +307,8 @@ Default model + effort per role. **Read the caveats — several knobs error on t
 ---
 
 ## Cost control
+
+**The ultimate local lever — run on Ollama for $0.** For development and self‑hosting, the local provider eliminates model cost entirely (it runs on your own hardware), so the budget ledger reads $0 and the live **Cost/Tokens meters** in the header simply show tokens produced. The four levers below govern the **cloud** (Claude/CMA) path.
 
 A loop "re‑runs constantly," so cost discipline is **structural, not optional**. Four levers, applied in order of impact:
 
@@ -313,11 +333,21 @@ A dark **command‑center** dashboard ("ORCHESTRATE EVERYTHING") — an ops floo
 
 **Tabs:** `DASHBOARD · AGENTS · TASKS · ARTIFACTS · ANALYTICS · SETTINGS`. **Keyboard‑first:** ⌘K search, ⌘P command palette / run loop, plus the bottom status‑bar chord set (Debug ⌘D, Find ⌘F, Explorer ⌘E, Map ⌘M, Help ?).
 
+**Real data + live instrumentation (no demo fixtures):**
+
+- **`loop <name>` creates a real department** — persisted to the local SQLite store and added to the hierarchy tree. An empty workspace shows an honest "create your first department" state, not seeded mock data.
+- **Settings → AI Provider** — choose **Ollama** (with a live dropdown of the models installed on your machine, populated from the daemon's `/api/tags`) or **Claude** (with an API‑key field). A **provider/model badge** in the loop header always says what's actually executing.
+- **Live Cost/Tokens meters** in the header tick as the engine streams `cost_usd`/`tokens` metrics; the same feed drives the dashboard sparkline cards. **Health %** is the real rolling gate‑pass rate, not a constant.
+- **Toasts** give real success/error feedback (department created, run failed, schedule saved) instead of silent failures. The **SSE connection dot** in the status bar shows live/reconnecting/stale.
+- The Inspector reads **real artifacts + distilled memory** from the loop's git working tree once it has run.
+
 **Color = state:** cyan (PLAN/selection/focus), green (running/healthy/EXECUTE), amber (review/OPTIMIZE/pending), purple (EVALUATE/memory/AI cognition), red (stop/error/P1), blue (MEMORY/info). Glow only on live/selected/focused elements. Full spec: deltas respect a per‑metric `goodDirection` (Bounce Rate down = green), status colors live in one `statusTheme` map, two type families only (Geist + Geist Mono).
 
 ---
 
 ## Data model
+
+> **Local vs prod.** The local cockpit persists a lightweight, realized subset to **SQLite** (`.volumes/departments.db`): a **`loops`** table (the registry) and an **`events`** table (the full per‑loop stream), with each loop's last‑run **status / health / cycle / spend** folded back onto its row from the live feed so it survives a restart. Git artifacts + JSONL memory continue to live on disk. The full relational schema below — with RLS, pgvector, and the audit spine — is the **Postgres** multi‑tenant/prod target.
 
 Core entities (Postgres; every tenant row carries `org_id`, enforced by RLS):
 
@@ -345,12 +375,12 @@ Org  1─* Vault(cma_vault_id)
 ```
 departments/
 ├── apps/
-│   ├── web/            # Next.js mission-control dashboard
+│   ├── web/            # Next.js cockpit + SQLite store (lib/server/db.ts), loop registry, AI-provider settings, run/stream/inspect routes
 │   ├── gateway/        # NestJS edge: auth, RBAC, GraphQL+REST, WS hub, `loop` intake
-│   └── orchestrator/   # Temporal worker host
+│   └── orchestrator/   # Temporal worker host (selects the same providers as the CLI)
 ├── packages/
-│   ├── orchestration/  # the engine: workflows, state-machine, activities, scheduling
-│   ├── agent-runtime/  # CMA abstraction (cma/ + selfhosted/) + models/ (tier policy) + prompts/ skills/
+│   ├── orchestration/  # the engine: cycle state-machine, activities, scheduling, local-driver + CLI
+│   ├── agent-runtime/  # the LoopAgentRuntime seam: ollama · claude · completion-runtime base · provider selector · cma + models (tier policy) + security/vault
 │   ├── artifacts/      # git provisioning, snapshot/versioning, S3 sync, embeddings
 │   ├── memory/         # memory-store sync + pgvector index + retrieval
 │   ├── events/         # the frozen unified Event schema + resume/dedupe contract
@@ -364,42 +394,59 @@ departments/
 └── docs/               # architecture, runbooks, ADRs
 ```
 
-**Boundary:** `orchestration` owns the cycle and never calls Claude; `agent-runtime` is the only package that talks to CMA / the Messages API.
+**Boundary:** `orchestration` owns the cycle and never calls a model; `agent-runtime` is the only package that talks to a provider (Ollama daemon / Claude Messages API / CMA).
 
 ---
 
 ## Getting started
 
-> The platform is in the design phase. The dev environment below is what **Phase 1** ([TASKS.md](./TASKS.md)) stands up.
+The fastest real loop is **fully local** — no cloud, no Docker, no API key:
 
 ```bash
-# Once Phase 1 lands:
 pnpm install
+# Optional but recommended — install Ollama (https://ollama.com) and pull a model:
+#   ollama pull gemma4:12b-it-qat      # a tool-capable instruction model loops well
+pnpm --filter @departments/web dev     # the cockpit at http://localhost:3000
+```
+
+Then, in the cockpit:
+
+1. **Settings → AI Provider** — choose **Ollama** and pick a model from the live dropdown (your installed models are listed automatically). Or choose **Claude** and paste an `sk-ant-…` key.
+2. **Create and run a department** from the command bar:
+   ```
+   > loop marketing      # creates + focuses a real, persisted department
+   > run marketing       # …and fires one real cycle (or hit the ▶ button)
+   ```
+3. Watch a real model stream **PLAN → EXECUTE → EVALUATE → IMPROVE → MEMORY** live into the console. Real artifacts (`HANDOFF.md`, `REPORT.md`, source) + distilled memory land in `.volumes/`; the loop and its full event history persist in SQLite and survive a restart.
+
+The same flow runs headless from the CLI:
+
+```bash
+DEPARTMENTS_PROVIDER=ollama OLLAMA_MODEL=gemma4:12b-it-qat \
+  pnpm --filter @departments/orchestration exec tsx src/cli.ts marketing --stream --cycles 1
+```
+
+**Full prod stack (multi‑tenant, optional):**
+
+```bash
 docker compose up -d        # Postgres(+pgvector), Redis, Temporal, MinIO
 pnpm db:migrate             # schema + RLS policies
 pnpm dev                    # web (Next.js) + gateway (NestJS) + orchestrator (Temporal)
-# open http://localhost:3000 — sign in as Commander, click the `marketing` fixture loop
+# Set ANTHROPIC_API_KEY for Claude; USE_CMA_RUNTIME=1 for Managed Agents.
 ```
-
-The end‑user experience is one command in the dashboard's command bar:
-
-```
-> loop marketing
-```
-
-…which bootstraps (`HANDOFF.md → README.md → TASKS.md → ask`), then runs the cycle and streams every agent's activity into the cockpit live.
 
 ---
 
 ## Roadmap
 
-Build is sequenced into five demoable, de‑risking phases — full detail in **[TASKS.md](./TASKS.md)**:
+Build was sequenced into five demoable, de‑risking phases, plus a **local‑first real‑data** pass that made it run for real — full detail in **[TASKS.md](./TASKS.md)**:
 
 1. ✅ **Foundations** — monorepo, design system, mission‑control shell, data model + RLS, auth, mock realtime, frozen `Event` protocol, cost‑ledger & cache seams.
-2. ✅ **The Loop Engine** — one loop runs a full real cycle on CMA: agent roster, artifacts/Git, independent grader, model tiering + caching, budget enforcement.
+2. ✅ **The Loop Engine** — one loop runs a full real cycle: agent roster, artifacts/Git, independent grader, model tiering + caching, budget enforcement (over the `LoopAgentRuntime` seam).
 3. ✅ **The Live Dashboard** — the whole cockpit wired to a real loop over a reconnect‑safe realtime spine (`EventStream` → SSE/WS, resume‑by‑`seq` + dedupe); the no‑progress detector + manual single‑step.
 4. ✅ **Hierarchy & Meta‑Loop** — L1–L4 trees, CEO coordination (Batch reviews), scheduling, rolled‑up health; concurrency/cadence + irreversible‑action gating + org‑wide cap enforced here.
 5. ✅ **Production Hardening** — the four gates **enforced** (Health % = rolling gate‑pass rate), full cost suite (caching audit + Fable‑5 cost gate + per‑org budget dashboard), append‑only tamper‑evident history, alerting, multi‑tenancy/RBAC + multi‑role UI, prod K8s + launch runbooks.
+6. ✅ **Local AI + Real Data** — the loop actually **thinks**: pluggable agent runtimes (**Ollama** local · **Claude** Messages API · Fake · CMA) behind the one seam, with the `$0` `ollama-local` sentinel for correct local billing; a **Settings → AI Provider** picker (live Ollama model dropdown / Claude key); **SQLite‑persisted** loops + event history; all demo fixtures removed for honest empty‑states; live **cost/token meters** + **toasts**. The durable Temporal path shares the same provider selection.
 
 ---
 

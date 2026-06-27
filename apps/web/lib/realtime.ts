@@ -10,6 +10,8 @@ import {
   type ConnectionState,
   type ResumeState,
 } from '@departments/realtime';
+import { useCockpit } from './store';
+import { toast } from './toast';
 
 export type RunStatus = 'idle' | 'running' | 'done' | 'error' | 'paused';
 export type RunMode = 'auto' | 'step';
@@ -195,10 +197,31 @@ export const useRealtime = create<RealtimeState>((set, get) => {
       const params = new URLSearchParams({ mode, cycles: String(opts?.cycles ?? 1) });
       if (opts?.stall) params.set('stall', '1');
       if (opts?.approvals) params.set('approvals', '1');
+      // Forward the user's provider selection so the spawned engine uses the chosen
+      // backend (local Ollama / Claude) instead of the deterministic fake runtime.
+      const pc = useCockpit.getState().providerConfig;
       try {
-        const res = await fetch(`/api/loops/${encodeURIComponent(loopId)}/run?${params}`, { method: 'POST' });
-        if (!res.ok && res.status !== 409) throw new Error(`run failed: ${res.status}`);
+        const res = await fetch(`/api/loops/${encodeURIComponent(loopId)}/run?${params}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            provider: pc.provider,
+            ollamaModel: pc.ollamaModel,
+            ollamaBaseUrl: pc.ollamaBaseUrl,
+            ollamaRoleModels: pc.ollamaRoleModels,
+            anthropicApiKey: pc.anthropicApiKey,
+            claudeModel: pc.claudeModel,
+          }),
+        });
+        if (res.status === 409) {
+          toast.info('That loop is already running.');
+          set((s) => ({ runStatus: { ...s.runStatus, [loopId]: 'running' } }));
+        } else if (!res.ok) {
+          throw new Error(`run failed: ${res.status}`);
+        }
       } catch (err) {
+        const message = err instanceof Error ? err.message : 'run failed';
+        toast.error(`Run failed: ${message}`);
         // Surface the failure locally; the live stream carries server-side errors.
         onEvent(loopId, {
           id: `client-run-err-${loopId}-${Date.now()}`,
@@ -206,7 +229,7 @@ export const useRealtime = create<RealtimeState>((set, get) => {
           loopId,
           ts: new Date().toISOString(),
           kind: 'error',
-          payload: { message: err instanceof Error ? err.message : 'run failed', code: 'CLIENT' },
+          payload: { message, code: 'CLIENT' },
         });
       }
     },

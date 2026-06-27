@@ -6,12 +6,9 @@ import type { Agent, AgentRole, ArtifactKind, Metric, Phase, PipelineState } fro
 import { uiLabelForPhase } from '@departments/shared';
 import type { ConnectionState } from '@departments/realtime';
 import { useRealtime, type RunStatus } from './realtime';
-import {
-  getAgents,
-  getMetrics,
-  getPipelineState,
-  getLoop,
-} from './fixtures';
+import { useLoopById } from './loops-client';
+import { useAgentRoster } from './roster';
+import { getMetrics, getPipelineState } from './fixtures';
 
 /**
  * Live-or-fixture hooks: each cockpit organism reads through one of these. When a real
@@ -52,6 +49,7 @@ export function useLivePipeline(loopId: string): PipelineState {
   const events = useRealtime((s) => s.liveEvents[loopId]);
   const activePhase = useRealtime((s) => s.activePhase[loopId]);
   const runStatus = useRealtime((s) => s.runStatus[loopId] ?? 'idle');
+  const loopCycleCount = useLoopById(loopId)?.cycleCount ?? 0;
 
   return useMemo(() => {
     if (!events || events.length === 0) return getPipelineState(loopId);
@@ -79,10 +77,10 @@ export function useLivePipeline(loopId: string): PipelineState {
     return {
       activePhase: activePhase ?? null,
       stageStatus,
-      cycleCount: maxCycle || (getLoop(loopId)?.cycleCount ?? 0),
+      cycleCount: maxCycle || loopCycleCount,
       elapsedSeconds: elapsedFrom(events),
     };
-  }, [events, activePhase, runStatus, loopId]);
+  }, [events, activePhase, runStatus, loopId, loopCycleCount]);
 }
 
 function elapsedFrom(events: DeptEvent[]): number {
@@ -109,9 +107,9 @@ export function useLiveAgents(loopId: string): Agent[] {
   const activePhase = useRealtime((s) => s.activePhase[loopId]);
   const runStatus = useRealtime((s) => s.runStatus[loopId] ?? 'idle');
   const hasLive = useHasLive(loopId);
+  const roster = useAgentRoster(loopId);
 
   return useMemo(() => {
-    const roster = getAgents(loopId);
     if (!hasLive) return roster;
 
     const activeRole = activePhase ? PHASE_ROLE[activePhase] : null;
@@ -126,7 +124,7 @@ export function useLiveAgents(loopId: string): Agent[] {
             ? 'Standing by'
             : a.activity,
     }));
-  }, [loopId, activePhase, runStatus, hasLive]);
+  }, [roster, activePhase, runStatus, hasLive]);
 }
 
 // ── Metrics ──────────────────────────────────────────────────────────────────
@@ -307,9 +305,33 @@ export function usePendingApprovals(loopId: string): PendingApprovals {
   }, [events]);
 }
 
-/** Loop health (0–100): the live `health` metric if present, else the fixture value. */
+/**
+ * Live cumulative cost + output tokens for the loop's current/last run (from the engine's
+ * `cost_usd` / `tokens` metric events). Falls back to the loop's stored spend when no run
+ * has streamed. Drives the header's cost/token readouts so they tick during a run.
+ */
+export function useLiveUsage(loopId: string): { costUsd: number; tokens: number; live: boolean } {
+  const events = useRealtime((s) => s.liveEvents[loopId]);
+  const storedSpent = useLoopById(loopId)?.spentUsd ?? 0;
+  return useMemo(() => {
+    let cost: number | null = null;
+    let tokens = 0;
+    if (events) {
+      for (const e of events) {
+        if (e.kind !== 'metric') continue;
+        if (e.payload.key === 'cost_usd') cost = e.payload.value;
+        else if (e.payload.key === 'tokens') tokens = e.payload.value;
+      }
+    }
+    if (cost !== null) return { costUsd: cost, tokens, live: true };
+    return { costUsd: storedSpent, tokens, live: false };
+  }, [events, storedSpent]);
+}
+
+/** Loop health (0–100): the live `health` metric if present, else the loop's stored value. */
 export function useLiveHealth(loopId: string): { health: number; live: boolean } {
   const events = useRealtime((s) => s.liveEvents[loopId]);
+  const storedHealth = useLoopById(loopId)?.health ?? 0;
   return useMemo(() => {
     let latest: number | null = null;
     if (events) {
@@ -318,6 +340,6 @@ export function useLiveHealth(loopId: string): { health: number; live: boolean }
       }
     }
     if (latest !== null) return { health: latest, live: true };
-    return { health: getLoop(loopId)?.health ?? 0, live: false };
-  }, [loopId, events]);
+    return { health: storedHealth, live: false };
+  }, [events, storedHealth]);
 }

@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import type { LoopStatus } from '@departments/shared';
 import { SectionLabel, Sparkline } from '@/components/atoms';
-import { buildLoopTree } from '@/lib/fixtures';
+import { useLoopTree } from '@/lib/loops-client';
 import { useLiveHealth } from '@/lib/live';
 import { accentVar, loopStatusAccent, loopStatusLabel } from '@/lib/status-theme';
 import { useCockpit } from '@/lib/store';
@@ -49,13 +49,14 @@ export function AnalyticsView() {
   const setSelectedLoop = useCockpit((s) => s.setSelectedLoop);
   const setTab = useCockpit((s) => s.setTab);
   const { health: liveHealth, live } = useLiveHealth(selectedLoopId);
+  const tree = useLoopTree();
 
   const { forest, agg, allLoops, units } = useMemo(() => {
     const healthOf = (id: string) => (live && id === selectedLoopId ? liveHealth : undefined);
-    const forest = rollupForest(buildLoopTree(), healthOf);
+    const forest = rollupForest(tree, healthOf);
     const allLoops = forest.flatMap(flattenRollup);
     return { forest, agg: aggregate(forest), allLoops, units: forest };
-  }, [selectedLoopId, liveHealth, live]);
+  }, [tree, selectedLoopId, liveHealth, live]);
 
   const drill = (id: string) => {
     setSelectedLoop(id);

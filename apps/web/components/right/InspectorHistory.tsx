@@ -1,7 +1,8 @@
 'use client';
 
-import type { Phase } from '@departments/shared';
-import { getLoop, getMemory } from '@/lib/fixtures';
+import type { Loop, Phase } from '@departments/shared';
+import { getMemory } from '@/lib/fixtures';
+import { useLoopById } from '@/lib/loops-client';
 import { useRunTrace } from '@/lib/live';
 import { accentVar, phaseAccent } from '@/lib/status-theme';
 import { SectionLabel } from '@/components/atoms';
@@ -28,8 +29,7 @@ function memoSource(path: string): string {
  * milestones (synthesized off the loop's cycleCount + phase order) interleaved with
  * distilled MEMORY decisions. Newest at top.
  */
-function buildHistory(loopId: string): HistoryEntry[] {
-  const loop = getLoop(loopId);
+function buildHistory(loopId: string, loop: Loop | undefined): HistoryEntry[] {
   const memory = getMemory(loopId);
   const cycle = loop?.cycleCount ?? 0;
   const entries: HistoryEntry[] = [];
@@ -87,8 +87,9 @@ function buildHistory(loopId: string): HistoryEntry[] {
 
 export function InspectorHistory({ loopId }: { loopId: string }) {
   // Live per-run trace when a real run has streamed; else the synthesized fixture timeline.
+  const loop = useLoopById(loopId);
   const trace = useRunTrace(loopId);
-  const entries = trace ?? buildHistory(loopId);
+  const entries = trace ?? buildHistory(loopId, loop);
   const live = trace !== null;
 
   return (

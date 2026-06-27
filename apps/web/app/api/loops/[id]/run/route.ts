@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { serverRealtime, sanitizeLoopId, type RunHandle } from '@/lib/server/realtime';
+import { recordEvent } from '@/lib/server/db';
 
 /**
  * POST /api/loops/:id/run — fire ONE real engine cycle for the loop.
@@ -30,8 +31,25 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const stall = url.searchParams.get('stall') === '1';
   const approvals = url.searchParams.get('approvals') === '1';
   const cycles = clampCycles(url.searchParams.get('cycles'));
+  // The cockpit's Settings selection (provider/model) rides in the POST body and is
+  // forwarded to the spawned engine as env — this is what lets a Run use a real local
+  // Ollama model or Claude instead of the deterministic fake runtime.
+  const providerEnv = await readProviderEnv(req);
 
   const rt = serverRealtime();
+  // Ingest (re-stamp authoritative seq → live SSE) AND persist to SQLite so the loop's
+  // last-run state + event history survive a server restart.
+  const persist = (raw: unknown): void => {
+    void rt.ingest(loopId, raw).then((stamped) => {
+      if (stamped) {
+        try {
+          recordEvent(stamped);
+        } catch (err) {
+          console.error('[loop-run] persist failed', err);
+        }
+      }
+    });
+  };
   if (rt.runs.has(loopId)) {
     return Response.json({ started: false, reason: 'already-running', mode }, { status: 409 });
   }
@@ -44,9 +62,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
   let child;
   try {
-    child = spawn('pnpm', args, { cwd: REPO_ROOT, env: process.env });
+    child = spawn('pnpm', args, { cwd: REPO_ROOT, env: { ...process.env, ...providerEnv } });
   } catch (e) {
-    await rt.ingest(loopId, errEvent(loopId, `failed to launch engine: ${msg(e)}`, 'SPAWN'));
+    persist(errEvent(loopId, `failed to launch engine: ${msg(e)}`, 'SPAWN'));
     return Response.json({ started: false, reason: 'spawn-failed', mode }, { status: 500 });
   }
 
@@ -62,24 +80,64 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     buffer = lines.pop() ?? '';
     for (const line of lines) {
       const trimmed = line.trim();
-      if (trimmed) void rt.ingest(loopId, safeParse(trimmed));
+      if (trimmed) persist(safeParse(trimmed));
     }
   });
   child.stderr.on('data', (d: Buffer) => console.error('[loop-run]', d.toString()));
 
   child.on('error', (e) => {
-    void rt.ingest(loopId, errEvent(loopId, `engine error: ${e.message}`, 'ENGINE'));
+    persist(errEvent(loopId, `engine error: ${e.message}`, 'ENGINE'));
     rt.runs.delete(loopId);
   });
   child.on('close', (code) => {
-    if (buffer.trim()) void rt.ingest(loopId, safeParse(buffer.trim()));
+    if (buffer.trim()) persist(safeParse(buffer.trim()));
     if (code && code !== 0) {
-      void rt.ingest(loopId, errEvent(loopId, `engine exited with code ${code}`, 'EXIT'));
+      persist(errEvent(loopId, `engine exited with code ${code}`, 'EXIT'));
     }
     rt.runs.delete(loopId);
   });
 
   return Response.json({ started: true, mode, cycles });
+}
+
+/**
+ * Translate the cockpit's provider selection (POST body) into the env vars the engine's
+ * provider selector reads. Only whitelisted keys are forwarded; a missing/empty body
+ * falls back to the server's own env (or the fake runtime). The API key never touches
+ * disk here — it's passed straight into the short-lived subprocess env.
+ */
+async function readProviderEnv(req: Request): Promise<Record<string, string>> {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return {};
+  }
+  if (!body || typeof body !== 'object') return {};
+  const b = body as Record<string, unknown>;
+  const env: Record<string, string> = {};
+  const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+
+  const provider = str(b.provider);
+  if (provider === 'ollama' || provider === 'claude' || provider === 'fake') env.DEPARTMENTS_PROVIDER = provider;
+  const ollamaModel = str(b.ollamaModel);
+  if (ollamaModel) env.OLLAMA_MODEL = ollamaModel;
+  const ollamaBaseUrl = str(b.ollamaBaseUrl);
+  if (ollamaBaseUrl) env.OLLAMA_BASE_URL = ollamaBaseUrl;
+  // Per-role Ollama overrides → a compact JSON map of only the roles that set a model.
+  if (b.ollamaRoleModels && typeof b.ollamaRoleModels === 'object') {
+    const overrides: Record<string, string> = {};
+    for (const [role, model] of Object.entries(b.ollamaRoleModels as Record<string, unknown>)) {
+      const m = str(model);
+      if (m) overrides[role] = m;
+    }
+    if (Object.keys(overrides).length) env.OLLAMA_ROLE_MODELS = JSON.stringify(overrides);
+  }
+  const apiKey = str(b.anthropicApiKey);
+  if (apiKey) env.ANTHROPIC_API_KEY = apiKey;
+  const claudeModel = str(b.claudeModel);
+  if (claudeModel) env.CLAUDE_MODEL = claudeModel;
+  return env;
 }
 
 function clampCycles(raw: string | null): number {

@@ -1,6 +1,6 @@
 'use client';
 
-import { getLoop } from '@/lib/fixtures';
+import { useLoopById } from '@/lib/loops-client';
 import { type InspectorTab, useCockpit } from '@/lib/store';
 import { cn } from '@/lib/cn';
 import { SectionLabel } from '@/components/atoms';
@@ -13,7 +13,7 @@ const INSPECTOR_TABS: readonly InspectorTab[] = ['DETAILS', 'CONFIG', 'HISTORY']
 export function InspectorPanel({ loopId }: { loopId: string }) {
   const inspectorTab = useCockpit((s) => s.inspectorTab);
   const setInspectorTab = useCockpit((s) => s.setInspectorTab);
-  const loop = getLoop(loopId);
+  const loop = useLoopById(loopId);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-surface">

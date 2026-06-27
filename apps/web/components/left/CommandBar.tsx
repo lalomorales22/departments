@@ -3,38 +3,60 @@
 import { type FormEvent, useState } from 'react';
 import { Play } from 'lucide-react';
 import { Kbd } from '@/components/atoms';
-import { LOOPS, getLoop } from '@/lib/fixtures';
+import { useLoops, useLoopRegistry } from '@/lib/loops-client';
 import { useCockpit } from '@/lib/store';
 import { useRealtime } from '@/lib/realtime';
 import { accentVar } from '@/lib/status-theme';
+import { toast } from '@/lib/toast';
 
 /**
- * The `> loop <name>` command input. Resolves the typed name against the roster and
- * focuses that loop. Prefix with `run ` (e.g. `run software-builder`) — or hit the ▶
- * button — to actually fire a real engine cycle whose events stream into the console.
+ * The `> loop <name>` command input — the way you create and focus departments.
+ *   `loop <name>`  → focus that department, CREATING it if it doesn't exist yet.
+ *   `run <name>`   → focus (creating if needed) and fire one real engine cycle.
+ *   ▶ button       → run one cycle of the currently selected loop.
+ * A real cycle's events stream live into the console; the loop is persisted to the DB.
  */
 export function CommandBar() {
   const setSelectedLoop = useCockpit((s) => s.setSelectedLoop);
   const selectedLoopId = useCockpit((s) => s.selectedLoopId);
   const runLoop = useRealtime((s) => s.runLoop);
   const running = useRealtime((s) => s.runStatus[selectedLoopId] === 'running');
+  const loops = useLoops();
+  const createLoop = useLoopRegistry((s) => s.create);
   const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  function onSubmit(e: FormEvent<HTMLFormElement>) {
+  async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const raw = value.trim();
-    if (!raw) return;
+    if (!raw || busy) return;
     const isRun = /^run\b/i.test(raw);
-    const query = raw.replace(/^(run|loop)\s+/i, '').trim().toLowerCase();
-    const target = query
-      ? LOOPS.find((l) => l.name.toLowerCase() === query || l.displayName.toLowerCase() === query)
+    const query = raw.replace(/^(run|loop)\s+/i, '').trim();
+    const q = query.toLowerCase();
+    setValue('');
+
+    let target = query
+      ? loops.find((l) => l.name.toLowerCase() === q || l.displayName.toLowerCase() === q)
       : isRun
-        ? getLoop(selectedLoopId)
+        ? loops.find((l) => l.id === selectedLoopId)
         : undefined;
+
+    // `loop <new name>` CREATES a real department (persisted to the DB) and focuses it.
+    if (!target && query) {
+      setBusy(true);
+      target = (await createLoop({ name: query })) ?? undefined;
+      setBusy(false);
+      if (target) toast.success(`Created department “${target.displayName}”.`);
+      else {
+        toast.error(`Couldn't create “${query}”.`);
+        return;
+      }
+    }
     if (target) {
       setSelectedLoop(target.id);
       if (isRun) void runLoop(target.id);
-      setValue('');
+    } else if (query) {
+      toast.info(`No department matches “${query}”.`);
     }
   }
 
@@ -57,8 +79,8 @@ export function CommandBar() {
       />
       <button
         type="button"
-        onClick={() => void runLoop(selectedLoopId)}
-        disabled={running}
+        onClick={() => selectedLoopId && void runLoop(selectedLoopId)}
+        disabled={running || !selectedLoopId}
         aria-label="Run selected loop"
         title="Run one cycle of the selected loop"
         className="focus-ring shrink-0 rounded-sm border border-hairline bg-surface-2 p-1 text-muted hover:border-hairline-strong hover:text-text disabled:opacity-40"

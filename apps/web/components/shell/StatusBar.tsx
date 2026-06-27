@@ -6,7 +6,7 @@ import type { ConnectionState } from '@departments/realtime';
 import { useCockpit } from '@/lib/store';
 import { useConnection, useRunStatus } from '@/lib/live';
 import { Kbd, StatusDot } from '@/components/atoms';
-import { ORG } from '@/lib/fixtures';
+import { LOCAL_ORG } from '@/lib/workspace';
 
 /** A clickable "label Kbd" chord hint in the bottom rail. */
 function ChordHint({
@@ -102,7 +102,7 @@ export function StatusBar() {
           )}
         </span>
         <span className="hidden h-3 w-px bg-hairline sm:block" aria-hidden />
-        <span className="hidden truncate text-faint sm:inline">{ORG.name}</span>
+        <span className="hidden truncate text-faint sm:inline">{LOCAL_ORG.name}</span>
         <span className="hidden h-3 w-px bg-hairline sm:block" aria-hidden />
         <LiveClock />
       </div>

@@ -49,7 +49,14 @@ import {
   type RunRecord,
   type SpawnRequest,
 } from '@departments/orchestration';
-import { FakeCmaRuntime, type LoopAgentRuntime, type ModelId } from '@departments/agent-runtime';
+import {
+  providerConfigFromEnv,
+  providerRoles,
+  runtimeFromConfig,
+  type LoopAgentRuntime,
+  type ModelId,
+  type ProviderConfig,
+} from '@departments/agent-runtime';
 import { RubricLibrary } from '@departments/rubrics';
 import { BudgetLedger, type ModelUsage } from '@departments/cost';
 import type { DeptEvent } from '@departments/events';
@@ -135,31 +142,16 @@ async function writeRunRecord(path: string, output: RunCycleOutput): Promise<voi
 // ─── Runtime selection: Fake by default, CmaRuntime when configured ─────────────
 
 /**
- * The default runtime is `FakeCmaRuntime` — deterministic, network-free, and the same
- * one the engine's own tests use, so a worker runs a genuine cycle (real artifact
- * diffs, an independent grader, prompt-cache warmth on cycle > 1) with no creds.
- *
- * Real CMA wiring is gated behind `ANTHROPIC_API_KEY` (+ `USE_CMA_RUNTIME=1`). The
- * `agent-runtime` package owns the real `CmaRuntime` (Phase 2 AI task); when it lands
- * and exports it, swap the import here. Until then we fail loud rather than silently
- * pretend to be real.
+ * The durable path selects its runtime exactly like the local CLI — via the shared
+ * `runtimeFromEnv()`/{@link providerConfigFromEnv}. So a worker can drive a real loop on a
+ * local Ollama model (`DEPARTMENTS_PROVIDER=ollama OLLAMA_MODEL=…`) or Claude
+ * (`ANTHROPIC_API_KEY`), or the deterministic Fake runtime by default — no fork from the
+ * cockpit's behavior. Resolved once per worker process (env is fixed at start).
  */
+const PROVIDER: ProviderConfig = providerConfigFromEnv();
+
 function selectRuntime(): LoopAgentRuntime {
-  const wantsCma = process.env.USE_CMA_RUNTIME === '1' || process.env.USE_CMA_RUNTIME === 'true';
-  if (wantsCma) {
-    if (!process.env.ANTHROPIC_API_KEY) {
-      throw new Error(
-        'USE_CMA_RUNTIME is set but ANTHROPIC_API_KEY is missing — refusing to run the real runtime without creds.',
-      );
-    }
-    // The real CmaRuntime is provided by @departments/agent-runtime once its `cma`
-    // adapter lands (Phase 2 AI task). It implements the SAME LoopAgentRuntime contract,
-    // so only this construction line changes — the engine + ports are untouched.
-    throw new Error(
-      'CmaRuntime requested but not yet wired — unset USE_CMA_RUNTIME to run the FakeCmaRuntime, or wire @departments/agent-runtime/cma here.',
-    );
-  }
-  return new FakeCmaRuntime();
+  return runtimeFromConfig(PROVIDER);
 }
 
 // ─── Engine deps (the hexagonal ports), assembled per cycle ─────────────────────
@@ -401,9 +393,13 @@ function makeGitArtifactStore(): ArtifactPort {
 const OPUS: ModelId = 'claude-opus-4-8';
 const SONNET: ModelId = 'claude-sonnet-4-6';
 
-/** Default per-role model assignment (README "AI layer & model tiering"):
- *  Planner/Reviewer/Docs judgment → Opus 4.8 `high`; Executor → Sonnet 4.6 `medium`. */
+/** Per-role model assignment. When the provider pins models (ollama → the `$0`
+ *  `ollama-local` sentinel for every role; claude → a pinned model), use those so the
+ *  ledger prices correctly; otherwise the default tiering (README "AI layer & model
+ *  tiering"): Planner/Reviewer/Docs judgment → Opus 4.8 `high`; Executor → Sonnet 4.6. */
 function roleModels(): LoopSpec['roles'] {
+  const bound = providerRoles(PROVIDER);
+  if (bound) return bound;
   const judgment: RoleModel = { modelId: OPUS, effort: 'high' };
   const executor: RoleModel = { modelId: SONNET, effort: 'medium' };
   return {

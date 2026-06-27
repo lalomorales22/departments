@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useCockpit } from '@/lib/store';
 import { useRealtime } from '@/lib/realtime';
+import { useLoopRegistry } from '@/lib/loops-client';
 import { cn } from '@/lib/cn';
 import { AppBar } from './AppBar';
 import { StatusBar } from './StatusBar';
@@ -13,6 +14,7 @@ import { InspectorPanel } from '../right/InspectorPanel';
 import { CommandPalette } from '../command/CommandPalette';
 import { ShortcutSheet } from '../command/ShortcutSheet';
 import { KeyboardChords } from '../command/KeyboardChords';
+import { Toaster } from './Toaster';
 
 /**
  * The cockpit frame: AppBar over a 3-column body (collapsible left/right) over the
@@ -22,9 +24,20 @@ import { KeyboardChords } from '../command/KeyboardChords';
 export function AppShell() {
   const { selectedLoopId, leftCollapsed, rightCollapsed, toggleLeft, toggleRight } = useCockpit();
 
+  // Load the real loop registry once, then make sure a valid loop is selected (the first
+  // one, unless a persisted selection is still present).
+  useEffect(() => {
+    void useLoopRegistry.getState().hydrate().then(() => {
+      const { loops } = useLoopRegistry.getState();
+      const { selectedLoopId: sel, setSelectedLoop } = useCockpit.getState();
+      if (!sel || !loops.some((l) => l.id === sel)) setSelectedLoop(loops[0]?.id ?? '');
+    });
+  }, []);
+
   // Keep ONE live SSE subscription open for the selected loop (reconnect-safe; resumes
   // by seq). Switching loops tears down the prior subscription and opens the new one.
   useEffect(() => {
+    if (!selectedLoopId) return;
     const rt = useRealtime.getState();
     rt.connect(selectedLoopId);
     return () => rt.disconnect(selectedLoopId);
@@ -85,6 +98,7 @@ export function AppShell() {
       <CommandPalette />
       <ShortcutSheet />
       <KeyboardChords />
+      <Toaster />
     </div>
   );
 }

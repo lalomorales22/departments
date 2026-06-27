@@ -12,7 +12,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { TABS, useCockpit, type Tab } from '@/lib/store';
-import { LOOPS } from '@/lib/fixtures';
+import { useLoops } from '@/lib/loops-client';
 import { StatusDot } from '@/components/atoms';
 import { loopStatusAccent, isLiveLoopStatus } from '@/lib/status-theme';
 
@@ -68,6 +68,7 @@ const GROUP_CLASS = '[&_[cmdk-group-heading]]:eyebrow [&_[cmdk-group-heading]]:p
  * a backdrop click closes. Styled entirely with our tokens — no default cmdk theme.
  */
 export function CommandPalette() {
+  const LOOPS = useLoops();
   const open = useCockpit((s) => s.commandOpen);
   const setCommandOpen = useCockpit((s) => s.setCommandOpen);
   const setSelectedLoop = useCockpit((s) => s.setSelectedLoop);

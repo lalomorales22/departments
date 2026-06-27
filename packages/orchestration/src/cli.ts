@@ -21,7 +21,13 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { defaultArtifactsRoot } from '@departments/artifacts';
-import { FakeCmaRuntime } from '@departments/agent-runtime';
+import {
+  FakeCmaRuntime,
+  providerConfigFromEnv,
+  providerRoles,
+  runtimeFromConfig,
+  type LoopAgentRuntime,
+} from '@departments/agent-runtime';
 import { DEFAULT_GATE_THRESHOLDS, type GateThresholdConfig } from '@departments/rubrics';
 import { RUBRIC_CATEGORIES, type Alert } from '@departments/shared';
 import type { DeptEvent } from '@departments/events';
@@ -36,6 +42,7 @@ function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] : undefined;
 }
+
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -68,7 +75,7 @@ async function main(): Promise<void> {
         RUBRIC_CATEGORIES.map((c) => [c, { minScore: Number(gateStrict), required: true }]),
       ) as GateThresholdConfig)
     : undefined;
-  const roles: LoopSpec['roles'] | undefined = useFable
+  let roles: LoopSpec['roles'] | undefined = useFable
     ? {
         planner: { modelId: 'claude-opus-4-8', effort: 'high' },
         executor: { modelId: 'claude-fable-5', effort: 'xhigh' },
@@ -131,12 +138,31 @@ async function main(): Promise<void> {
 
   // Tool gate: interactive (--approvals) > policy (--ask) > none.
   let toolGate: ToolGate | undefined = manualToolGate;
-  let runtime = stall ? new FakeCmaRuntime({ stall: true }) : undefined;
+  // The simulation flags (--stall/--approvals/--ask) require the deterministic Fake
+  // runtime. A NORMAL run defers to the configured provider (Ollama/Claude/Fake) — this is
+  // what makes the loop actually think when OLLAMA_MODEL / ANTHROPIC_API_KEY are set.
+  let runtime: LoopAgentRuntime | undefined = stall ? new FakeCmaRuntime({ stall: true }) : undefined;
   if (approvals) {
     runtime = new FakeCmaRuntime({ stall, irreversible: { tool: 'github.deploy', summary: 'deploy build to production' } });
   } else if (ask) {
     toolGate = ask === 'deny' ? denyToolGate() : autoApproveToolGate;
     runtime = new FakeCmaRuntime({ stall, irreversible: { tool: 'github.deploy', summary: 'deploy build to production' } });
+  }
+  if (!runtime) {
+    const cfg = providerConfigFromEnv();
+    runtime = runtimeFromConfig(cfg);
+    // CRITICAL: bind the loop's role models to the provider the runtime actually calls, so
+    // the ledger bills the right price. Otherwise the engine accounts every phase against
+    // the default Opus/Sonnet tiers and a FREE local run gets charged Claude prices.
+    roles = roles ?? providerRoles(cfg);
+    const modelLabel = cfg.provider === 'ollama' ? cfg.ollamaModel : cfg.provider === 'claude' ? (cfg.claudeModel ?? 'tiered') : 'deterministic';
+    if (!stream) err(`▶ provider: ${cfg.provider}${modelLabel ? ` · ${modelLabel}` : ''}\n`);
+    else if (onEvent) {
+      onEvent({
+        id: `${loopId}-provider`, seq: 0, loopId, ts: new Date().toISOString(), kind: 'log',
+        payload: { level: 'info', source: 'engine', message: `provider: ${cfg.provider}${modelLabel ? ` · ${modelLabel}` : ''}` },
+      } as DeptEvent);
+    }
   }
 
   // Child-spawn approval demo: in --approvals mode the loop requests a child loop and

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ArtifactKind } from '@departments/shared';
 import { FileText, Upload, X } from 'lucide-react';
 import { SectionLabel } from '@/components/atoms';
-import { LOOPS } from '@/lib/fixtures';
+import { useLoops } from '@/lib/loops-client';
 import { useLoopInspect } from '@/lib/live';
 import { cn } from '@/lib/cn';
 import { useCockpit } from '@/lib/store';
@@ -26,6 +26,7 @@ const KIND_LABEL: Record<ArtifactKind, string> = {
  * shiki highlighting + version diff are the Phase-5 polish; this is the working browser.
  */
 export function ArtifactsView({ loopId }: { loopId: string }) {
+  const LOOPS = useLoops();
   const importOpen = useCockpit((s) => s.importOpen);
   const setImportOpen = useCockpit((s) => s.setImportOpen);
 
@@ -192,6 +193,7 @@ function ImportModal({
   onClose: () => void;
   onImported: (path: string) => void;
 }) {
+  const LOOPS = useLoops();
   const [target, setTarget] = useState(loopId);
   const [path, setPath] = useState('');
   const [content, setContent] = useState('');

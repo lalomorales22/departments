@@ -4,7 +4,6 @@
  * expose in later phases, so swapping fixtures → live data is a thin change.
  */
 import type { Phase, PipelineState } from '@departments/shared';
-import { getLoop } from './loops';
 
 export * from './loops';
 export * from './agents';
@@ -22,35 +21,20 @@ export interface GateSnapshot {
   score: number;
 }
 
+/** Gate snapshot. Real gate verdicts come from a loop's live EVALUATE events; no mock seed. */
 export function getGates(_loopId: string): GateSnapshot[] {
-  return [
-    { category: 'quality', passed: true, score: 94 },
-    { category: 'data_validation', passed: true, score: 97 },
-    { category: 'alignment_risk', passed: true, score: 91 },
-    { category: 'performance', passed: false, score: 73 },
-  ];
+  return [];
 }
 
 /**
- * Derive a live-looking pipeline state for a loop. `elapsedSeconds` is seeded so the
- * center timer has a believable starting value; the UI ticks it forward client-side.
+ * The idle pipeline state for a loop that hasn't streamed any events yet (all stages
+ * pending). Once a run streams, `useLivePipeline` derives the real active phase + cycle.
  */
-export function getPipelineState(loopId: string): PipelineState {
-  const loop = getLoop(loopId);
-  const active = loop?.phase ?? null;
+export function getPipelineState(_loopId: string): PipelineState {
   const order: Phase[] = ['plan', 'execute', 'evaluate', 'improve', 'memory'];
-  const activeIdx = active ? order.indexOf(active) : -1;
   const stageStatus: PipelineState['stageStatus'] = {};
-  order.forEach((p, i) => {
-    if (activeIdx < 0) stageStatus[p] = 'pending';
-    else if (i < activeIdx) stageStatus[p] = 'complete';
-    else if (i === activeIdx) stageStatus[p] = 'active';
-    else stageStatus[p] = 'pending';
+  order.forEach((p) => {
+    stageStatus[p] = 'pending';
   });
-  return {
-    activePhase: active,
-    stageStatus,
-    cycleCount: loop?.cycleCount ?? 0,
-    elapsedSeconds: 1972, // ~32m53s into the current cycle
-  };
+  return { activePhase: null, stageStatus, cycleCount: 0, elapsedSeconds: 0 };
 }

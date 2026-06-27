@@ -7,11 +7,36 @@ import {
   loopStatusAccent,
   loopStatusLabel,
 } from '@/lib/status-theme';
-import { getLoop } from '@/lib/fixtures';
-import { useLiveHealth, useLivePipeline, useRunStatus } from '@/lib/live';
+import { useLoopById } from '@/lib/loops-client';
+import { useLiveHealth, useLivePipeline, useLiveUsage, useRunStatus } from '@/lib/live';
 import { StatusBadge, TimerDisplay } from '@/components/atoms';
+import { useCockpit } from '@/lib/store';
 import { cn } from '@/lib/cn';
 import { HealthGauge } from './HealthGauge';
+
+/** A chip showing which AI backend will actually drive this loop — so a fake and a real
+ *  run never look identical. Green = local Ollama ($0), purple = Claude (metered). */
+function ProviderBadge() {
+  const cfg = useCockpit((s) => s.providerConfig);
+  const isOllama = cfg.provider === 'ollama';
+  const model = isOllama ? cfg.ollamaModel : cfg.claudeModel || 'tiered';
+  const key = isOllama ? 'green' : 'purple';
+  const ready = isOllama ? Boolean(cfg.ollamaModel) : Boolean(cfg.anthropicApiKey);
+  return (
+    <span
+      className="tabular inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 text-2xs"
+      style={{
+        color: accentVar(ready ? key : 'amber'),
+        borderColor: `color-mix(in oklab, ${accentVar(ready ? key : 'amber')} 40%, transparent)`,
+      }}
+      title={ready ? `Runs on ${cfg.provider} · ${model}` : 'Pick a model / add a key in Settings → AI Provider'}
+    >
+      {isOllama ? 'Ollama' : 'Claude'}
+      <span className="text-faint">·</span>
+      {ready ? model : 'not configured'}
+    </span>
+  );
+}
 
 /** Map the live run status onto a loop status for the badge, or null when idle. */
 function liveLoopStatus(run: ReturnType<typeof useRunStatus>): LoopStatus | null {
@@ -33,6 +58,13 @@ function liveLoopStatus(run: ReturnType<typeof useRunStatus>): LoopStatus | null
 function usd(n: number): string {
   if (n >= 1000) return `$${(n / 1000).toFixed(1)}k`;
   return `$${n.toFixed(2)}`;
+}
+
+/** Compact token count (e.g. 842, 1.2k, 3.4M). */
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return `${n}`;
 }
 
 /** A labeled instrument readout: eyebrow on top, mono value below. */
@@ -60,10 +92,11 @@ function Readout({
  * (elapsed, cycle, budget, health) on the right.
  */
 export function LoopHeader({ loopId }: { loopId: string }) {
-  const loop = getLoop(loopId);
+  const loop = useLoopById(loopId);
   // Hooks must run unconditionally (before any early return).
   const pipeline = useLivePipeline(loopId);
   const { health } = useLiveHealth(loopId);
+  const usage = useLiveUsage(loopId);
   const runStatus = useRunStatus(loopId);
 
   if (!loop) {
@@ -82,9 +115,10 @@ export function LoopHeader({ loopId }: { loopId: string }) {
   const running = status === 'running';
   const statusKey = loopStatusAccent[status];
 
-  const budgetPct = loop.budgetCapUsd
-    ? Math.min(100, (loop.spentUsd / loop.budgetCapUsd) * 100)
-    : 0;
+  // Spend ticks live from the engine's cumulative cost metric during a run; otherwise the
+  // loop's stored spend. (Local Ollama runs read $0 — the honest number.)
+  const spent = usage.live ? usage.costUsd : loop.spentUsd;
+  const budgetPct = loop.budgetCapUsd ? Math.min(100, (spent / loop.budgetCapUsd) * 100) : 0;
   // Budget bar shifts from calm → hot as it approaches the cap.
   const budgetKey = budgetPct >= 90 ? 'red' : budgetPct >= 70 ? 'amber' : 'green';
   const budgetColor = accentVar(budgetKey);
@@ -103,6 +137,7 @@ export function LoopHeader({ loopId }: { loopId: string }) {
             label={loopStatusLabel[status]}
             live={isLiveLoopStatus(status)}
           />
+          <ProviderBadge />
         </div>
         <h1 className="truncate text-xl font-semibold leading-tight text-text">
           {loop.displayName}
@@ -127,11 +162,19 @@ export function LoopHeader({ loopId }: { loopId: string }) {
 
         <div className="h-8 w-px self-center bg-hairline" aria-hidden />
 
+        <Readout label="Tokens">
+          <span style={usage.live && running ? { color: accentVar('green') } : undefined}>
+            {fmtTokens(usage.tokens)}
+          </span>
+        </Readout>
+
+        <div className="h-8 w-px self-center bg-hairline" aria-hidden />
+
         <div className="flex w-28 flex-col items-stretch gap-1">
           <div className="flex items-baseline justify-between">
-            <span className="eyebrow">Budget</span>
+            <span className="eyebrow">Cost</span>
             <span className="tabular text-2xs leading-none text-muted" data-machine>
-              {usd(loop.spentUsd)}
+              {usd(spent)}
               <span className="text-faint"> / {usd(loop.budgetCapUsd)}</span>
             </span>
           </div>

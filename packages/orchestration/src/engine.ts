@@ -212,6 +212,8 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
   let tickNo = 0;
   let totalCost = 0;
   let cacheReadTokens = 0;
+  let outputTokens = 0;
+  let metEvt = 0;
   let reworks = 0;
   let paused = false;
   let downgraded = false;
@@ -294,6 +296,18 @@ export async function runCycle(spec: LoopSpec, deps: EngineDeps): Promise<CycleR
     const { costUsd } = deps.ledger.recordUsage({ orgId: spec.orgId, loopId, runId }, usage, modelId);
     totalCost += costUsd;
     cacheReadTokens += usage.cacheReadInputTokens;
+    outputTokens += usage.outputTokens;
+    // Live, cumulative cost + token counters (reuse the frozen `metric` kind — no protocol
+    // bump). These tick the cockpit's cost/token readouts and dashboard cards during a run.
+    emit({
+      id: `${runId}-cost-${metEvt}`, seq: 0, loopId, runId, ts: clock.now(), kind: 'metric',
+      payload: { key: 'cost_usd', name: 'Cost', value: Number(totalCost.toFixed(4)), display: `$${totalCost.toFixed(4)}`, delta: Number(costUsd.toFixed(4)), goodDirection: 'down', unit: 'usd' },
+    });
+    emit({
+      id: `${runId}-tokens-${metEvt}`, seq: 0, loopId, runId, ts: clock.now(), kind: 'metric',
+      payload: { key: 'tokens', name: 'Tokens', value: outputTokens, display: `${outputTokens}`, delta: usage.outputTokens, goodDirection: 'up' },
+    });
+    metEvt += 1;
     // Cache audit (#1 cost lever): flag MID-LIFE degradation — a loop that was warm and
     // collapsed to ~0 cache reads (a prompt/tool change invalidated the cached prefix).
     if (deps.cacheAuditor) {

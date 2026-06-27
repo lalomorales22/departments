@@ -109,7 +109,7 @@ describe('validateKnobs — exhaustive effort sweep', () => {
 // ─── Table integrity: each entry is internally consistent ───────────────────────
 
 describe('MODEL_TIERS — internal consistency', () => {
-  it('has exactly one entry per known model id', () => {
+  it('has exactly one entry per model id, incl. the four Claude tiers', () => {
     const ids = MODEL_TIERS.map((t) => t.modelId);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).toEqual(
@@ -120,7 +120,9 @@ describe('MODEL_TIERS — internal consistency', () => {
         'claude-haiku-4-5',
       ]),
     );
-    expect(ids.length).toBe(4);
+    // The four Claude API tiers are mandatory; additional non-Claude tiers (e.g. the
+    // `ollama-local` sentinel) may extend the table without weakening the Claude policy.
+    expect(ids.length).toBeGreaterThanOrEqual(4);
   });
 
   for (const tier of MODEL_TIERS) {
@@ -142,9 +144,13 @@ describe('MODEL_TIERS — internal consistency', () => {
         }
       });
 
-      it('prices are positive', () => {
-        expect(tier.priceInPerM).toBeGreaterThan(0);
-        expect(tier.priceOutPerM).toBeGreaterThan(0);
+      it('prices are non-negative (paid Claude tiers strictly positive; local is $0)', () => {
+        expect(tier.priceInPerM).toBeGreaterThanOrEqual(0);
+        expect(tier.priceOutPerM).toBeGreaterThanOrEqual(0);
+        if (tier.role !== 'local') {
+          expect(tier.priceInPerM).toBeGreaterThan(0);
+          expect(tier.priceOutPerM).toBeGreaterThan(0);
+        }
       });
     });
   }
@@ -222,5 +228,30 @@ describe('escalateOneTier — proposes a legal next tier', () => {
       modelId: 'claude-fable-5',
       effort: 'max',
     });
+  });
+
+  it('the local sentinel NEVER escalates onto a paid Claude tier (role outside the ladder)', () => {
+    // A local loop that reworks must stay local — escalation must not silently bill Claude.
+    expect(escalateOneTier('ollama-local', null)).toEqual({ modelId: 'ollama-local', effort: null });
+  });
+});
+
+// ─── Local sentinel tier: knobless + $0 + valid no-knob pairing ──────────────────
+
+describe('ollama-local — the knobless, free local provider tier', () => {
+  it('is registered and carries no effort/thinking knobs at $0', () => {
+    const tier = getTier('ollama-local');
+    expect(tier.role).toBe('local');
+    expect(tier.supportsEffort).toBe(false);
+    expect(tier.allowedEfforts).toEqual([]);
+    expect(tier.defaultEffort).toBeNull();
+    expect(tier.supportsAdaptiveThinking).toBe(false);
+    expect(tier.priceInPerM).toBe(0);
+    expect(tier.priceOutPerM).toBe(0);
+  });
+
+  it('passes knob validation with no knobs, and rejects any effort param', () => {
+    expect(validateKnobs('ollama-local', {})).toEqual([]);
+    expect(validateKnobs('ollama-local', { effort: 'high' }).length).toBeGreaterThan(0);
   });
 });

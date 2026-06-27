@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Shield, ChevronsUpDown, Check } from 'lucide-react';
 import { ROLES_BY_SENIORITY, USER_ROLE_LABELS } from '@departments/shared';
-import { COMMANDER } from '@/lib/fixtures';
+import { LOCAL_COMMANDER } from '@/lib/workspace';
 import { useCockpit } from '@/lib/store';
 import { cn } from '@/lib/cn';
 
@@ -70,10 +70,10 @@ export function CommanderProfile() {
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm bg-surface-2 font-mono text-2xs tabular text-accent-cyan"
           style={{ boxShadow: '0 0 0 1px color-mix(in oklab, var(--accent-cyan) 38%, transparent)' }}
         >
-          {COMMANDER.initials}
+          {LOCAL_COMMANDER.initials}
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="truncate text-sm leading-none text-text">{COMMANDER.name}</span>
+          <span className="truncate text-sm leading-none text-text">{LOCAL_COMMANDER.name}</span>
           <span className="eyebrow leading-none">{USER_ROLE_LABELS[userRole]}</span>
         </div>
         {userRole === 'commander' || userRole === 'owner' ? (

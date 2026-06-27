@@ -1,7 +1,10 @@
 'use client';
 
 import { RUBRIC_CATEGORIES, RUBRIC_CATEGORY_LABELS, type RubricCategory } from '@departments/shared';
-import { getAgents, getGates, getLoop } from '@/lib/fixtures';
+import { getGates } from '@/lib/fixtures';
+import { useLoopById, useLoopRegistry } from '@/lib/loops-client';
+import { useAgentRoster } from '@/lib/roster';
+import { toast } from '@/lib/toast';
 import { accentVar, rubricAccent } from '@/lib/status-theme';
 import { cn } from '@/lib/cn';
 import { SectionLabel } from '@/components/atoms';
@@ -115,14 +118,21 @@ function CadenceEditor({ loopId, fallback }: { loopId: string; fallback: string 
         aria-label="Loop schedule / cadence"
         onChange={(e) => {
           const next = e.target.value;
-          setLoopCadence(loopId, next);
+          setLoopCadence(loopId, next); // optimistic
           void fetch(`/api/loops/${encodeURIComponent(loopId)}`, {
             method: 'PATCH',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ cadence: next }),
-          }).catch(() => {
-            /* optimistic — the durable write is the engine/DB path */
-          });
+          })
+            .then((res) => {
+              if (res.ok) {
+                toast.success(`Schedule set to ${next.toUpperCase()}.`);
+                void useLoopRegistry.getState().hydrate(); // reflect the durable value
+              } else {
+                toast.error(`Couldn't save schedule (${res.status}).`);
+              }
+            })
+            .catch(() => toast.error('Couldn’t save schedule — is the server reachable?'));
         }}
         className="tabular rounded-sm border border-hairline bg-bg-deep px-1.5 py-0.5 text-xs uppercase text-text focus-ring"
       >
@@ -175,8 +185,8 @@ function ConfigRow({ k, v, accent }: { k: string; v: string; accent?: string }) 
 }
 
 export function InspectorConfig({ loopId }: { loopId: string }) {
-  const loop = getLoop(loopId);
-  const agents = getAgents(loopId);
+  const loop = useLoopById(loopId);
+  const agents = useAgentRoster(loopId);
 
   const cap = loop?.budgetCapUsd ?? 0;
   const softCap = cap * 0.8;

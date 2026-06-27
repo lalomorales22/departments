@@ -14,9 +14,9 @@ import { RUBRIC_CATEGORY_LABELS } from '@departments/shared';
 import {
   getArtifacts,
   getGates,
-  getLoop,
   getMemory,
 } from '@/lib/fixtures';
+import { useLoopById } from '@/lib/loops-client';
 import { useLiveMetrics, useLoopInspect } from '@/lib/live';
 import { accentVar, rubricAccent } from '@/lib/status-theme';
 import { DeltaChip, SectionLabel, Sparkline } from '@/components/atoms';
@@ -57,7 +57,7 @@ function Block({
 }
 
 export function InspectorDetails({ loopId }: { loopId: string }) {
-  const loop = getLoop(loopId);
+  const loop = useLoopById(loopId);
   const { metrics } = useLiveMetrics(loopId);
   const gates = getGates(loopId);
   const inspect = useLoopInspect(loopId);

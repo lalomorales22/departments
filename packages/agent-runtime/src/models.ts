@@ -13,12 +13,25 @@
 
 // ─── Primitives ─────────────────────────────────────────────────────────────
 
-/** The exact model ids in play. */
+/**
+ * The exact model ids in play.
+ *
+ * `ollama-local` is a SENTINEL tier id, not a real model name: it lets a knobless local
+ * provider flow through the engine's tier/cost/escalation machinery without forcing the
+ * Claude-shaped union open per pulled model. The REAL Ollama model string (e.g.
+ * `gemma4:12b-it-qat`, which contains `:` and `/`) rides on the runtime instance, never
+ * here. Its tier carries $0 price + no effort/thinking knobs + role `local` (outside the
+ * escalation ladder), so it can never auto-bump to a *paid* Claude tier.
+ */
 export type ModelId =
   | 'claude-opus-4-8'
   | 'claude-fable-5'
   | 'claude-sonnet-4-6'
-  | 'claude-haiku-4-5';
+  | 'claude-haiku-4-5'
+  | 'ollama-local';
+
+/** The sentinel tier id for any locally-served (Ollama) model. */
+export const OLLAMA_LOCAL_MODEL_ID = 'ollama-local' as const;
 
 /** The `output_config.effort` rungs. `xhigh`/`max` are the high-cost tiers. */
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -29,7 +42,7 @@ export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
  * planner are both "judgment" work and share the Opus tier; executors map to Sonnet;
  * mechanical L4 workers to Haiku; gated greenfield strategy to Fable.
  */
-export type ModelRole = 'judgment' | 'strategy' | 'executor' | 'worker';
+export type ModelRole = 'judgment' | 'strategy' | 'executor' | 'worker' | 'local';
 
 /** A single subset of the knobs a request might carry, for validation. */
 export interface ModelKnobs {
@@ -146,6 +159,24 @@ export const MODEL_TIERS: readonly ModelTier[] = [
     notes:
       'L4 worker loops (lint/format/classify). 200K context. NO effort param (omit), NO adaptive thinking. Mechanical/high-volume work, often batched.',
   },
+  {
+    // Local provider (Ollama). Knobless: no effort, no adaptive thinking, $0 (runs on the
+    // user's own hardware). Role `local` is intentionally OUTSIDE the worker→executor→
+    // judgment→strategy escalation ladder, so escalateOneTier() is a no-op for it — a
+    // local loop can never auto-escalate onto a paid Claude tier.
+    role: 'local',
+    modelId: 'ollama-local',
+    contextTokens: 131_072,
+    supportsAdaptiveThinking: false,
+    omitThinkingParam: false,
+    supportsEffort: false,
+    allowedEfforts: [],
+    defaultEffort: null,
+    priceInPerM: 0,
+    priceOutPerM: 0,
+    notes:
+      'Sentinel for any locally-served Ollama model (the real model name rides on the runtime). Knobless + $0 — runs on local hardware. NOT a Claude API tier; excluded from the escalation ladder.',
+  },
 ];
 
 /** Lookup a tier entry by model id. */
@@ -237,6 +268,8 @@ export const LOCKED_ROLE_EFFORT: Readonly<Record<ModelRole, Effort | null>> = {
   executor: 'medium',
   judgment: 'high',
   strategy: 'xhigh',
+  // Local models are knobless — the effort param is omitted entirely.
+  local: null,
 };
 
 /** The locked effort for a model id (resolved via its tier role). `null` ⇒ omit effort. */

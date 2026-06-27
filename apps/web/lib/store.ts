@@ -17,8 +17,39 @@ export type Tab = (typeof TABS)[number];
 export type LogTab = 'LOGS' | 'DEBUG' | 'OUTPUT';
 export type InspectorTab = 'DETAILS' | 'CONFIG' | 'HISTORY';
 
-export const SETTINGS_TABS = ['DEFAULTS', 'GATES', 'MEMBERS', 'BILLING', 'INTEGRATIONS'] as const;
+export const SETTINGS_TABS = ['PROVIDER', 'DEFAULTS', 'GATES', 'MEMBERS', 'BILLING', 'INTEGRATIONS'] as const;
 export type SettingsTab = (typeof SETTINGS_TABS)[number];
+
+/** Which model backend actually drives a loop's cognition. */
+export type AiProvider = 'ollama' | 'claude';
+
+/** The orchestrator roles the engine drives — each can run its own local model. */
+export const ORCHESTRATOR_ROLES = ['planner', 'executor', 'reviewer', 'docs'] as const;
+export type OrchestratorRole = (typeof ORCHESTRATOR_ROLES)[number];
+
+/** The provider selection sent with every run + shown as the cockpit's model badge. */
+export interface ProviderConfig {
+  provider: AiProvider;
+  /** Ollama daemon base URL. */
+  ollamaBaseUrl: string;
+  /** The default Ollama model — used for any role without an explicit override. */
+  ollamaModel: string;
+  /** Per-role Ollama model overrides; empty value ⇒ use the default model for that role. */
+  ollamaRoleModels: Record<OrchestratorRole, string>;
+  /** Anthropic API key (local-only; sent to the same-origin run route, never persisted server-side). */
+  anthropicApiKey: string;
+  /** Optional pinned Claude model id; empty ⇒ per-role tiering. */
+  claudeModel: string;
+}
+
+export const DEFAULT_PROVIDER_CONFIG: ProviderConfig = {
+  provider: 'ollama',
+  ollamaBaseUrl: 'http://localhost:11434',
+  ollamaModel: '',
+  ollamaRoleModels: { planner: '', executor: '', reviewer: '', docs: '' },
+  anthropicApiKey: '',
+  claudeModel: '',
+};
 
 interface CockpitState {
   /** Currently focused loop (drives center + inspector). */
@@ -86,12 +117,22 @@ interface CockpitState {
   /** Active SETTINGS sub-tab. */
   settingsTab: SettingsTab;
   setSettingsTab: (t: SettingsTab) => void;
+
+  /**
+   * The AI provider + model that drives loop cognition. Persisted locally and sent with
+   * every run so the spawned engine uses the chosen backend (local Ollama or Claude). The
+   * API key lives only in this local store + the same-origin run request — never on a server.
+   */
+  providerConfig: ProviderConfig;
+  setProviderConfig: (patch: Partial<ProviderConfig>) => void;
 }
 
 export const useCockpit = create<CockpitState>()(
   persist(
     (set) => ({
-      selectedLoopId: 'loop-marketing',
+      // Empty until the loop registry hydrates from the DB (then the first loop, or a
+      // freshly created one, is selected). No fixture id is assumed.
+      selectedLoopId: '',
       setSelectedLoop: (id) => set({ selectedLoopId: id, selectedAgentId: null }),
 
       selectedAgentId: null,
@@ -140,18 +181,23 @@ export const useCockpit = create<CockpitState>()(
           },
         })),
 
-      settingsTab: 'GATES',
+      settingsTab: 'PROVIDER',
       setSettingsTab: (t) => set({ settingsTab: t }),
+
+      providerConfig: DEFAULT_PROVIDER_CONFIG,
+      setProviderConfig: (patch) => set((s) => ({ providerConfig: { ...s.providerConfig, ...patch } })),
     }),
     {
       name: 'departments-cockpit',
       partialize: (s) => ({
+        selectedLoopId: s.selectedLoopId,
         leftCollapsed: s.leftCollapsed,
         rightCollapsed: s.rightCollapsed,
         logTab: s.logTab,
         inspectorTab: s.inspectorTab,
         userRole: s.userRole,
         gateThresholds: s.gateThresholds,
+        providerConfig: s.providerConfig,
       }),
     },
   ),

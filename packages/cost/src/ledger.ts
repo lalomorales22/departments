@@ -45,6 +45,14 @@ export const OPUS_MODEL_ID = 'claude-opus-4-8' as const;
 export const FABLE_MODEL_ID = 'claude-fable-5' as const;
 export const SONNET_MODEL_ID = 'claude-sonnet-4-6' as const;
 export const HAIKU_MODEL_ID = 'claude-haiku-4-5' as const;
+/**
+ * Sentinel id for any locally-served (Ollama) model. Priced at $0 — it runs on the
+ * user's own hardware. CRITICAL: without this entry, {@link priceFor} would fall back to
+ * the Opus tier ($5/$25) for the unknown id and a free local loop would burn a fake
+ * budget and trip the hard-cap pause. Keep it in lockstep with the `ollama-local`
+ * MODEL_TIERS entry in @departments/agent-runtime.
+ */
+export const OLLAMA_LOCAL_MODEL_ID = 'ollama-local' as const;
 
 /** The price table, keyed by exact model ID. */
 export const PRICE_TABLE: Readonly<Record<string, ModelPrice>> = {
@@ -52,6 +60,8 @@ export const PRICE_TABLE: Readonly<Record<string, ModelPrice>> = {
   [FABLE_MODEL_ID]: { inputPerMTok: 10, outputPerMTok: 50 },
   [SONNET_MODEL_ID]: { inputPerMTok: 3, outputPerMTok: 15 },
   [HAIKU_MODEL_ID]: { inputPerMTok: 1, outputPerMTok: 5 },
+  // Local models cost nothing — they run on the user's machine.
+  [OLLAMA_LOCAL_MODEL_ID]: { inputPerMTok: 0, outputPerMTok: 0 },
 };
 
 /**
