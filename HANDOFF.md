@@ -57,7 +57,17 @@ Headless CLI: `DEPARTMENTS_PROVIDER=ollama OLLAMA_MODEL=gemma4:12b-it-qat pnpm -
 
 ---
 
-## 🔜 What's left to finish — start here (prioritized)
+## 🔜 Next up — UX & Information Architecture (3 phases · full detail in `TASKS.md` Phases 7–9)
+
+The platform **runs**; the next work makes it **legible and well-structured to use** (driven by hands-on feedback). Build in order — **Phase 8 is the heaviest** (it reframes where everything lives), so the quick, high-value Phase 7 goes first.
+
+- **Phase 7 — Live Run Feedback.** A running loop currently says "Running" but *looks* idle. Add a **progress indicator on the loop-pipeline cards** — the active PLAN→EXECUTE→EVALUATE→OPTIMIZE→MEMORY stage fills/pulses, with "phase 3/5" + cycle N/M — and surface elapsed/tokens/streaming output so it's obviously alive. Pipeline = `apps/web/components/center/LoopPipeline.tsx`; progress derives from the live feed (`lib/live.ts` `useLivePipeline`).
+- **Phase 8 — Information Architecture (the restructure).** Make the **6 top tabs a whole-org mega-dashboard** (aggregate ALL loops); clicking a loop in the left hierarchy opens **that loop's own workspace page** (its pipeline/agents/tasks/artifacts/history/console). Merge the right **Inspector** (DETAILS/CONFIG/HISTORY) into **one scrolling page**; make the right sidebar **resizable + collapsible**. Wire **New Loop / New Agent / New Task** (⌘N/⌘A/⌘T) to **dedicated creation modals** — today all three fall through to the global-search window (⌘K). Touches `AppShell`, `TabNav`/`CenterColumn`, `LeftRail`/`LoopTree`, `InspectorPanel`, `QuickActionList`/`CommandPalette`.
+- **Phase 9 — Members & Integrations.** Drop the **4 default fake members** (Alex/Commander/Sam/Jordan in `SettingsView` `MembersPane`); add real **add/delete member** (persisted), role-gated by `canAssignRole`. Fix the **Integrations** page's "GATED (DOCKER/CREDS)" labels to be honest — **Ollama is live/connected** locally; CMA/Temporal/Redis/Postgres are genuinely gated.
+
+> To pick up in a fresh chat: read this file, then `TASKS.md` Phases 7–9, and start on **Phase 7**.
+
+## 🗄 Later — prod data plane & cloud (backlog, after the UX phases)
 
 ### A. Quick wins
 1. **Test the Claude provider.** Add an `sk-ant-…` key in Settings → AI Provider (or `ANTHROPIC_API_KEY` env), run a loop, confirm it streams + the cost meter shows non-zero. The runtime is `claude.ts`; if the Messages API shape needs an adjustment (e.g. an `output_config.effort` or a beta header), this is where. Consider streaming SSE for Claude (currently non-streaming, chunked into `output` events).

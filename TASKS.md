@@ -276,6 +276,82 @@ Because a loop "re‑runs constantly," cost and runaway control are **structural
 
 ---
 
+## Phase 6 — Local AI & Real Data  ✅ SHIPPED (Cycle 6, 2026-06-27)
+
+**Goal.** Make the loop actually *think* on real data, locally — pluggable model runtimes + real persistence, replacing the Phase‑1 fixtures. No cloud, no Docker, no key required.
+
+- [x] Real runtimes behind `LoopAgentRuntime`: a shared `CompletionLoopRuntime` base + **`OllamaRuntime`** (local, `localhost:11434`, `think:false`, **$0**) + **`ClaudeRuntime`** (direct Messages API). `runtimeFromEnv()` selection; `ollama-local` **$0 sentinel** `ModelId` (role `local`, off the escalation ladder) + `providerRoles()` so a free local run is never billed at a Claude tier; **per‑role Ollama models** (`resolveCallModel(modelId, role)`).
+- [x] SQLite persistence (`apps/web/lib/server/db.ts`, `node:sqlite`): `loops` + `events`; loop CRUD routes; the run route folds status/health/cycle/spend onto the loop row (survives restart).
+- [x] Fixtures removed: `loops-client` registry + `workspace` identity + provider‑aware `roster`; honest empty‑states; `loop <name>` creates a real persisted department.
+- [x] Cockpit: **Settings → AI Provider** pane (provider radio, live Ollama model dropdown, per‑role models, Claude key); provider/model badge; live **cost/token meters**; toasts. The durable Temporal path shares the same provider selection.
+
+**Acceptance — done.** A real cockpit Run drove a local Ollama model through all five phases (incl. a rework) at **$0**, events persisted, per‑role models routed; merged to `main` + pushed (public GitHub). Claude path code‑complete but UNTESTED (no key). See `HANDOFF.md`.
+
+**Dependencies.** Phases 1–5.
+
+---
+
+# ▶ NEXT: UX & Information Architecture (Phases 7–9)
+
+> The platform *runs*; this 3‑phase plan makes it **legible and well‑structured to use**. Driven by hands‑on feedback. Build in order — Phase 8 (the IA restructure) is the heaviest and reframes where everything lives.
+
+## Phase 7 — Live Run Feedback & Loop Legibility
+
+**Goal.** A running loop should *visibly* show its progress. Today you press Run, it says "Running," and it looks like nothing is happening — fix that.
+
+### Loop pipeline
+- [ ] **Per‑phase progress on the pipeline cards** (PLAN→EXECUTE→EVALUATE→OPTIMIZE→MEMORY): the active stage fills/animates and pulses; completed stages read complete; the current phase shows a progress indication (driven by streamed events — e.g. output volume / sub‑steps — or an indeterminate animated fill where there's no granular signal).
+- [ ] **Overall cycle progress:** a thin bar / "phase 3 of 5" across the pipeline, plus "cycle N of M" for multi‑cycle runs.
+- [ ] **Make "Running" legible:** prominent active‑phase label, ticking elapsed timer, the latest streamed output line, and the live token/cost meter surfaced near the pipeline (the meters already exist — bring them forward).
+- [ ] **Activity pulse:** a subtle, rationed liveness signal on the active stage; the LogConsole auto‑scrolls/highlights the newest lines.
+
+**Acceptance — done when:** pressing Run shows the pipeline visibly advancing PLAN→…→MEMORY with a progress indication, the active phase pulsing, elapsed + tokens ticking; on completion every stage reads complete and the loop returns to idle. A user never has to wonder "is it doing anything?"
+
+**Dependencies.** Phase 6 (real runs, streamed events, cost/token metrics).
+
+## Phase 8 — Information Architecture: Org Dashboard ↔ Per‑Loop Workspace
+
+**Goal.** Separate the whole‑app **mega‑dashboard** from a single loop's **workspace**. The 6 top tabs are org‑wide; clicking a loop opens *that loop's* page.
+
+### Navigation model
+- [ ] Define two modes — **ORG view** (the 6 top tabs aggregate across ALL loops) and **LOOP view** (a selected loop's dedicated workspace) — with a clear switch: clicking a loop in the left hierarchy enters its workspace; a breadcrumb / "back to org" returns.
+- [ ] **Top 6 tabs become org‑wide aggregates:** DASHBOARD (all loops' health/status/spend), AGENTS (every agent across loops), TASKS (all tasks), ARTIFACTS (all artifacts), ANALYTICS (org rollup), SETTINGS (workspace‑level).
+- [ ] **Per‑loop workspace:** clicking a loop opens its own page — its pipeline + live progress, agents, tasks, artifacts, history, and console, scoped to that loop.
+
+### Right sidebar (Inspector) redesign
+- [ ] **Merge DETAILS / CONFIG / HISTORY into ONE scrolling page** (sections stacked) instead of three tabs.
+- [ ] Make the right sidebar **resizable** (drag handle) and **toggle‑collapsible**; persist width + collapsed state. (Left rail too, if cheap.)
+- [ ] Decide the inspector's role in the new IA (per‑loop side context vs folded into the per‑loop workspace page).
+
+### Creation flows
+- [ ] **New Loop / New Agent / New Task** (⌘N / ⌘A / ⌘T) open **dedicated creation modals**, NOT the global‑search window (⌘K). New Loop = name + mission + level/parent → a persisted department. New Agent / New Task scoped to a loop with the right fields (or a clear scope + honest state if not yet backed).
+
+**Acceptance — done when:** the 6 top tabs show whole‑org aggregates; clicking any loop in the hierarchy opens its own workspace page with that loop's progress/details; the right inspector is one scrolling, resizable, collapsible panel; ⌘N/⌘A/⌘T each open a distinct creation modal (never the search window).
+
+**Dependencies.** Phase 6 (loop registry + per‑loop data); Phase 7 (the per‑loop progress view it embeds).
+
+## Phase 9 — Members, Roles & Integrations (real management)
+
+**Goal.** Settings reflects reality: manage real members; integrations tell the truth.
+
+### Members & Roles
+- [ ] **Remove the 4 default fake members** (Alex Rivera / Commander / Sam Operator / Jordan Viewer). Start from just the real local commander.
+- [ ] **Add member** — a modal (name + email + role), persisted (local store / SQLite).
+- [ ] **Delete member** — with a guard (can't delete the last owner / yourself).
+- [ ] Role assignment respects the RBAC matrix (`canAssignRole` — no privilege escalation).
+
+### Integrations
+- [ ] **Fix the "GATED (DOCKER/CREDS)" labels** — verify accuracy and relabel honestly for a local‑first app: what's actually connectable now vs genuinely gated. (e.g. **Ollama** is live/connected locally; CMA / Temporal / Redis / Postgres are truly gated until Docker/creds.)
+- [ ] Surface real connections with live status (Ollama daemon reachable ✓) and a way to **connect/configure** the real ones; show gated ones as "not configured · requires Docker/creds," not as if they're broken.
+
+**Acceptance — done when:** Members starts clean (no fake people) and supports add + delete with correct role gating; Integrations honestly reflects what's connected (Ollama live) vs gated, with a path to configure the real ones.
+
+**Dependencies.** Phase 6 (real workspace identity + SQLite for persistence).
+
+> **Still in the backlog (after the UX phases):** test the Claude provider (needs a key) · make GitHub CI green · the prod data plane (Docker → Postgres/pgvector + real `db:migrate` + RLS §A–G · Temporal workflows · gateway↔Postgres) · a real CMA client · remaining web gaps (real tasks projection, ANALYTICS on persisted views, screenshot transport, full a11y). Full detail in `HANDOFF.md`.
+
+---
+
 ## Cross‑cutting / Definition of Done
 
 **Testing.** Unit (state‑machine transitions, gate routing, event normalizer, ledger math, `(model,knob)` policy); integration (`LoopWorkflow` against a CMA sandbox, resume‑from‑`HANDOFF`, reconnect‑by‑`seq` + dedupe); contract tests on the `Event` protocol; RLS policy tests as a CI gate from migration #1; eval sets for grader rubrics and effort/model sweeps. **A loop run is not "green" unless the grader's Outcome `result` and a real artifact diff agree.**
