@@ -2,69 +2,118 @@
 
 > The cross-cycle memory of this repo's own `loop software-builder`. **MEMORY is the only legal handoff between cycles** — the next PLAN reads this first. Keep it truthful and current.
 
-- **Cycle:** 6 (Local AI + Real Data)
-- **Updated:** 2026-06-26
-- **Status (Cycle 6):** ✅ The loop now actually THINKS on real data. Real model runtimes behind the existing `LoopAgentRuntime` seam — `agent-runtime/{completion-runtime,ollama,claude,provider}.ts`: a shared `CompletionLoopRuntime` base (per-phase prompts → real artifacts, streamed `output`, independent 4-gate JSON grader) + **`OllamaRuntime`** (local, `localhost:11434/api/chat`, `think:false`, **$0**) + **`ClaudeRuntime`** (direct Messages API). Provider chosen by `runtimeFromEnv()` (`DEPARTMENTS_PROVIDER`/`OLLAMA_MODEL`/`ANTHROPIC_API_KEY`…). Added an **`ollama-local` sentinel `ModelId`** (role `local`, off the escalation ladder, $0 in MODEL_TIERS + cost PRICE_TABLE) and the CLI pins every role to it for ollama — **without this the engine bills local tokens at Opus/Sonnet and trips the cap.** Cockpit: a **Settings → AI Provider** pane (Ollama|Claude, live model dropdown from `GET /api/ollama/models` → `/api/tags`, Claude key field) feeding `store.providerConfig` → `runLoop` POST body → run-route subprocess env; LoopHeader provider/model badge. **Real persistence:** `apps/web/lib/server/db.ts` (`node:sqlite`, `.volumes/departments.db`, single-writer) — `loops`+`events`; `GET/POST /api/loops`, `GET/PATCH/DELETE /api/loops/:id` (PATCH writes for real); the run route persists events + folds status/health/cycle/spend onto the loop row (survives restart). **Fixtures wiped:** `lib/loops-client.ts` (registry hooks) + `lib/workspace.ts` (real org/commander) replace the loop fixtures; tasks/metrics/logs/memory/artifacts/gates → honest empty-states; `agents.ts` → real canonical roster. Command bar `loop <name>` creates a persisted department. Verified: 13/13 typecheck · 11 pkgs' tests pass · `next build` + lint clean · a real cockpit Run drove qwen3.5:2b through all 5 phases + a rework (268 events persisted, $0, real artifacts/memory). Claude path is code-complete but UNTESTED (no key). DB starts empty. The frozen `Event` protocol was NOT bumped.
-  - **Path wired (durable):** the provider→runtime + provider→roles binding is now DRY in `agent-runtime/provider.ts` (`runtimeFromConfig` + **`providerRoles(cfg)`** — the billing-critical "ollama ⇒ `ollama-local` for every role" rule). BOTH the local CLI (`cli.ts`) and the Temporal worker (`apps/orchestrator/activities.ts` `selectRuntime`/`roleModels`) consume it — the durable path no longer throws for CMA and supports Ollama/Claude identically to the cockpit. Verified an escalating ollama run still bills **$0** (role `local` is off the escalation ladder).
-  - **Polish:** a toast bus (`lib/toast.ts` + `shell/Toaster.tsx`) replaces swallowed fetch errors (loop create, run failure, already-running, cadence edit — which now durably PATCHes + re-hydrates). The engine emits cumulative **`cost_usd` + `tokens`** `metric` events (frozen kind, no protocol bump) → live Cost/Tokens readouts in `LoopHeader` (tick during a run) + auto dashboard cards via `useLiveUsage`. The SSE connection dot already existed in `StatusBar`. LoopHeader carries a provider/model badge.
-- **Status (Cycles 1–5):** ✅ Phases 1–5 all complete. The platform is **hardened**: the four gates are **enforced guardrails** and **Health % = the rolling gate-pass rate**; the cost suite is finalized (caching audit incl. mid-life degradation, locked per-route efforts, the Fable-5 cost-approval gate, a per-org budget dashboard, quantified Batch savings); history is **append-only + tamper-evident** (a hash-chain sidecar over events + Postgres immutability triggers/audit log); **alerting**, a **multi-role RBAC** UI + gateway guard, and per-org **security** (secret hygiene, untrusted-content fencing, `limited` networking, Vaults) are live; prod **K8s + seven launch runbooks** are authored. DB/Temporal/CMA/Vault paths are authored + gated behind Docker/creds. The **frozen `Event` protocol (v1) was NOT bumped.**
+- **Cycle:** 6 (Local AI + Real Data) — shipped
+- **Updated:** 2026-06-27
+- **Repo:** 🌐 **PUBLIC on GitHub** → https://github.com/lalomorales22/departments · default branch **`main`** (account `lalomorales22`). All six phases are merged to `main` (clean fast-forward) and pushed. Working tree clean. `origin` = `https://github.com/lalomorales22/departments.git`; `main` tracks `origin/main`.
 
 ---
 
-## Phase 5 — what shipped
+## ⏱ Current state — read this first
 
-### The four gates, ENFORCED + Health % = rolling gate pass rate
-- **`@departments/rubrics/gates.ts`** (pure + 18 tests): `GateThresholdConfig` (0–100, per-category `minScore`/`required`), `DEFAULT_GATE_THRESHOLDS` (60/100), `PHASE_GATES` (PLAN→Alignment; EXECUTE→Quality+Data; EVALUATE→all four; Performance→IMPROVE), `enforceBoundary`, `gatePassRate`, `rollingHealth`, and a threaded **`HealthController`**. `clearsThreshold` = the grader passed it **AND** the score meets the (possibly tightened) floor — so tightening a threshold fails an otherwise-passing gate, but loosening can never override a grader-failed gate. Scores are **0–100** (the `GateVerdict` scale); the 0–1 offline heuristic is bridged by `gateOutcomesFromHeuristic`.
-- **Engine wiring** (`engine.ts`): after the bounded rework, the engine normalizes `verdict.gates`, rolls health via an injected `HealthController` (threaded across cycles like escalation), and **raises a barrier** — `gateBlocked = !enforceBoundary('evaluate')` — that **skips IMPROVE** and records the failed cycle straight to MEMORY. `CycleResult` gained `gates`, `health`, `gateBlocked`. The **canonical `health` metric is now emitted by the engine** at the cycle boundary (so the durable/Temporal path emits it too); the local-driver **no longer double-emits** it and keeps the no-progress detector purely for auto-pause. The fake grader now **fails quality + alignment when stalled** so a stuck loop reads unhealthy before it auto-pauses.
-- **Cockpit:** `InspectorConfig` gate sliders are **live** with a **Health-impact preview** (Health % at the chosen thresholds), gated by `gate.threshold.edit`; SETTINGS → Gate Thresholds mirrors them org-wide.
+**The platform runs for real, locally, with no cloud and no Docker.** `loop <name>` in the cockpit creates a real, persisted department; you pick a model in **Settings → AI Provider** (local Ollama or Claude); a real model streams a genuine **PLAN → EXECUTE → EVALUATE → IMPROVE → MEMORY** cycle into the console; real artifacts + memory land in `.volumes/`; loops + full event history persist in **SQLite** and survive restart. Local Ollama runs at **$0**.
 
-### Cost, finalized + swept (`@departments/cost`)
-- **Caching audit** (`caching.ts`, +10 tests): `cacheReadRatio`, `auditCacheHit`, and a rolling **`CacheAuditor`** that flags **MID-LIFE degradation** (a warm loop that collapses to ~0 cache reads after a prompt/tool change) — the case the Phase-2 "is it ever warm" check missed. The engine records every tick and alerts on `degraded`.
-- **Per-route effort lock** (`models.ts`): `LOCKED_ROLE_EFFORT` (worker none · executor `medium` · judgment `high` · strategy `xhigh`), `lockedEffortForModel`, `EffortSweepEntry`, and `validateLockedEffortPolicy` (asserts every locked (role,effort) is legal for its tier).
-- **Fable-5 cost-approval gate** (`ledger.ts`): `requiresFableApproval` (membership-based — Fable is reserved) + `projectedCycleUsd`. The engine downgrades an **unapproved** Fable role to Opus and raises `fable_approval_required`; `spec.fableApproved` lets it through.
-- **Per-org budget dashboard** (`ledger.ts`): `orgReport(orgId)` → org spend/caps/state/utilization/headroom + a per-loop breakdown (share of org spend, own state), sorted biggest-first. `batchSavings` quantifies the 50% Batch lever.
+- **Verified:** 13/13 packages typecheck · 11 packages' unit tests pass · `next build` + `next lint` clean · real cockpit runs drove `qwen3.5:2b` (and `gemma4:12b-it-qat`) through all five phases (incl. a real rework) at **$0**, with events persisted and per-role models routed correctly.
+- **Untested:** the **Claude** provider is code-complete but has never run (no API key on this machine). CI on GitHub hasn't been observed green yet.
+- **Gated (authored, not exercised here):** the whole prod data plane — Postgres/pgvector, Redis, Temporal, MinIO, the NestJS gateway, real CMA + Vaults. These need `docker compose up -d` and/or creds.
 
-### Append-only, tamper-evident history (protocol stays frozen)
-- **Hash-chain sidecar** (`@departments/events/audit`, +9 tests): `hashEvent`/`buildChain`/`verifyChain` (sha256 over canonical, key-sorted JSON) + a stateful `AuditChain`. Detects content tamper, deletion, insertion, reordering, and non-monotonic seq. Exposed via a **separate subpath** (`@departments/events/audit`) because it uses `node:crypto` — it is **NOT** on the main barrel, so the browser bundle never pulls in a node built-in, and the `Event` wire shape is untouched.
-- **`packages/db/sql/0006_audit.sql`**: BEFORE UPDATE/DELETE **immutability triggers** on `event`/`run`/`artifact_version`/`audit_log` (purge-gated by `app.allow_purge` for admin cascade/retention only); an **`audit_log`** (old/new jsonb + `changed_by`) on the control-plane tables; `audit_snapshot` checkpoints; and three `security_invoker` read surfaces — **`rls_violation_audit`** (cross-org FK mismatch detector, must be empty), **`caching_audit`** (per-run cache hit ratio), **`gate_pass_daily`** (Health % over time). RLS test doc gained **§G** (audit-trail integrity).
+### ▶ Run it right now
 
-### Alerting (`@departments/shared/alerts`, +9 tests)
-- Pure `Alert` types + `AlertBus` (multi-sink, per-key dedupe within a cooldown, recent feed) + detectors: `RefusalStormDetector` (sliding window) + `StreamHealthMonitor` (seq gap / reorder / stale-heartbeat). The engine raises `budget_breach`/`gate_failure`/`cache_degradation`/`fable_approval_required`/`tool_denied`; the driver raises `no_progress_pause`. Mirrored as Prometheus rules in `infra/k8s/alerting.yaml`.
+```bash
+pnpm install
+# (optional) install Ollama + pull a tool-capable model: ollama pull gemma4:12b-it-qat
+pnpm --filter @departments/web dev          # cockpit → http://localhost:3000
+#  Settings → AI Provider → pick an Ollama model (or add a Claude key)
+#  command bar:  loop marketing   then   run marketing   (or hit ▶)
+```
+Headless CLI: `DEPARTMENTS_PROVIDER=ollama OLLAMA_MODEL=gemma4:12b-it-qat pnpm --filter @departments/orchestration exec tsx src/cli.ts marketing --stream --cycles 1`
 
-### Security (`@departments/agent-runtime`)
-- **`security.ts`** (+12 tests): secret scan/redact/`assertNoSecrets` (never echoes the secret — "nothing secret in prompts/artifacts/event history"), `wrapUntrusted` (fences tool/web content + defangs a spoofed closing tag — operator instructions stay on the system channel), and `limited` **deny-by-default networking** (`isHostAllowed` with exact/subdomain/parent matching, `hostOf`).
-- **`vault.ts`** (+7 tests): `VaultRef` (`vault://org/key`), `InMemoryVault`, gated `CmaVault`, and `injectSecrets` (egress-time header injection) — creds travel as **handles**, resolved only at egress, never in the prompt.
-- **Gateway** (`apps/gateway/src/auth/`): `RbacGuard` (APP_GUARD) + `@RequireCapability(...)` decorator + `AuthMiddleware` + `OrgContextInterceptor` (sets `app.current_org`/`app.current_user` per request) — the **authoritative** RBAC check (the cockpit's gating is cosmetic), over the shared matrix. `GET /loops` is decorated `loop.view`.
+> ⚠️ **NOTE on the cockpit page:** verify it renders in a browser at `http://localhost:3000` (or `http://127.0.0.1:3000`). In the build session the page served 200 via curl and every API worked, but a visual screenshot check was blocked by a sandbox boundary — so a human eyeball pass on the UI is still worth doing.
 
-### Multi-tenancy + multi-role UI
-- **`@departments/shared/rbac.ts`** (+9 tests): the `RBAC_MATRIX` capability matrix (owner ⊇ commander ⊇ operator ⊇ viewer; Commander holds the kill switch + the `always_ask`/spawn approval gates; org admin is Owner-only), `can`, `canAssignRole` (no privilege escalation), `ROLES_BY_SENIORITY`.
-- **Cockpit:** a **role switcher** in `CommanderProfile`; capability-gated `TransportBar` (Viewer read-only, Operator run/step, Commander pause) + `ApprovalBanner` (only a Commander decides; others see "Awaiting a Commander"); a full **`SettingsView`** (Defaults · Gate Thresholds · Members & Roles · Billing/per-org budget dashboard · Integrations), role-gated; `ActivityMap` labeled an explicit **decorative stub**. New store state: `userRole`, `gateThresholds`, `settingsTab` (role + thresholds persisted). `apps/web/lib/rbac.ts` (`useCan`/`useUserRole`) imports the SAME matrix the gateway enforces.
+---
 
-### Infra + runbooks
-- `infra/k8s/production.yaml` (HPA for gateway + orchestrator, PDBs, `ConfigMap` + KMS-sourced `Secret` template), `infra/k8s/alerting.yaml` (Prometheus rules), and `docs/runbooks/` — index + **kill-switch, runaway-loop, tenant-isolation-incident, refusal-storm, cost-governance, RLS-audit, deployment**.
+## ✅ Cycle 6 — what shipped (all in commit `bbc07af`, on `main`)
 
-## Verification (this machine, no Docker / no CMA creds)
-- **13/13 packages typecheck**; **`next build` + `next lint` clean**; **all unit tests pass** — shared **18**, rubrics **28** (gates 18), cost **32** (caching 10, ledger.phase5 7), events **13** (audit 9), agent-runtime **94** (security 12, vault 7), orchestration **82** (engine.gates 8), plus memory 15, realtime 30, artifacts 8, orchestrator 7, scripts 16. ~**89 new Phase-5 tests**.
-- **End-to-end via the CLI:** `--gate-strict 99` raises the gate barrier (IMPROVE skipped, health **0%**, a `gate_failure` alert); `--fable` downgrades the unapproved Fable executor to Opus (a `fable_approval_required` alert, health 100%); `--fable --fable-approve` runs Fable with no alert. The Phase 1–4 demos (`--tree`, `--ask`, `--approvals`, `--org-cap`, `--stall`) still pass unchanged.
+### Real model runtimes (the loop now THINKS)
+- **`@departments/agent-runtime`** — a shared `CompletionLoopRuntime` base (`completion-runtime.ts`: per-phase prompts → real artifacts in the git tree, streamed `output` events, an independent four-gate JSON grader) with two real providers:
+  - **`OllamaRuntime`** (`ollama.ts`) — streams `localhost:11434/api/chat`, **$0**, sends **`think:false`** (thinking models otherwise spend their whole budget reasoning and return EMPTY content). Verified a no-op on non-thinking models.
+  - **`ClaudeRuntime`** (`claude.ts`) — the Anthropic **Messages API**, direct (no SDK). Sends only `{model, max_tokens, system, messages}` — no temperature/thinking/budget knobs (the params that 400 on Opus/Fable). **Untested without a key.**
+- **`FakeCmaRuntime`** stays the deterministic offline runtime (demos/tests). The four implement the SAME `LoopAgentRuntime` contract.
+- **Provider selection is DRY in `provider.ts`:** `providerConfigFromEnv()` / `runtimeFromConfig()` / `runtimeFromEnv()`, env `DEPARTMENTS_PROVIDER` · `OLLAMA_BASE_URL` · `OLLAMA_MODEL` · `OLLAMA_ROLE_MODELS` (JSON) · `ANTHROPIC_API_KEY` · `CLAUDE_MODEL`. Consumed identically by the **CLI** (`orchestration/cli.ts`) AND the **durable Temporal worker** (`apps/orchestrator/activities.ts` `selectRuntime`/`roleModels`).
+- **Billing correctness (critical):** added an **`ollama-local` sentinel `ModelId`** — role **`local`**, *outside* the worker→executor→judgment→strategy escalation ladder, **$0** in `models.ts` `MODEL_TIERS` + `cost/ledger.ts` `PRICE_TABLE`. `providerRoles(cfg)` pins every role to it for Ollama. **Without this the engine bills local tokens at the Opus/Sonnet tier and trips the budget cap.** Verified an *escalating* Ollama run still bills $0 (the sentinel can't bump to a paid tier).
+- **Per-role Ollama models:** `resolveCallModel(modelId, role)` (base signature now takes the role); `OllamaRuntime({ roleModels })` picks a different model per role; Settings has a **default model + 4 per-role dropdowns** (planner/executor/reviewer/docs). Verified end-to-end: a run with `reviewer→gemma4:12b-it-qat` used the default `qwen3.5:2b` for PLAN/EXECUTE/MEMORY and gemma for EVALUATE, $0.
 
-## Known gaps / explicitly deferred
-- **No Docker here:** `0006_audit.sql` (immutability triggers, audit log, `rls_violation_audit`, `caching_audit`, `gate_pass_daily`), the gateway RBAC guard/auth/org-context, CMA Vaults, and the Temporal paths are authored + typechecked but exercised only under `docker compose up -d` / with creds. The local cockpit/CLI use in-memory adapters.
-- **Web gate-threshold + member-role edits are optimistic** — they `PATCH /api/loops/:id/gates` and `/api/org/members/:id` best-effort and swallow errors (those routes are not implemented locally); the durable write is the gateway/DB path.
-- **Alerts are engine-side**, surfaced via guardrail **log** events + the Prometheus rules + runbooks, NOT over the frozen `Event` channel — there is no dedicated cockpit alerts banner (a `task`/`alert` patch channel would be a separate, non-protocol-bumping addition).
-- **ANALYTICS** still falls back to a synthesized health series when no live `health` metric is present; the per-org budget dashboard reads the client-side rollup over fixtures (prod reads `orgReport`/`gate_pass_daily`/`org_health_daily` over the gateway).
-- **Screenshot transport** remains a labeled, capability-gated stub. `self_hosted` CMA fallback is out of v1 scope.
-- `.volumes/` (per-loop git repos + memory) is gitignored runtime state; `p5-*` demo loops are cleaned up.
+### Real persistence (SQLite — no Docker)
+- **`apps/web/lib/server/db.ts`** (`node:sqlite`, single file `.volumes/departments.db`, single-writer from the Next server). Tables: **`loops`** (the registry) + **`events`** (full per-loop stream). The run route persists every ingested event and **folds terminal status/health/cycle/spend onto the loop row** (parses the engine's completion-log cost), so state survives a restart. Git artifacts + JSONL memory still live on disk.
+- Routes: **`GET/POST /api/loops`**, **`GET/PATCH/DELETE /api/loops/:id`** (PATCH now **really writes** cadence/mission/displayName/budget), **`GET /api/ollama/models`** (proxies `/api/tags`).
 
-## Next PLAN should start here (Phase 6 — Operate & Merge)
-1. **Exercise the Docker stack end-to-end** (Redis/Temporal/Postgres+pgvector/MinIO/gateway): apply `0001`→`0006`, run the RLS §A–§G gate green, drive a real `loopWorkflow`/`ceoWorkflow`, and confirm the immutability triggers + `rls_violation_audit` behave.
-2. **Merge the phase branches → `main`** (`phase-2` → `phase-3` → `phase-4` → `phase-5`); wire CI to run typecheck + lint + unit + the RLS/`(model,knob)` gates + `next build` on every PR.
-3. **Real CMA**: flip `USE_CMA_RUNTIME`, exercise `CmaRuntime` + `CmaVault` + the Fable refusal-safe path + Scheduled Deployments with creds; verify caching reads are non-zero and the Batch 50% holds.
-4. **Close the web gaps**: an alerts surface (a patch channel, not a protocol bump), real `/gates` + `/org/members` routes, ANALYTICS on the real `gate_pass_daily`/`org_health_daily` views, the screenshot transport, and a full a11y + responsive audit.
+### De-mocked cockpit (fixtures removed)
+- **`lib/loops-client.ts`** — a reactive zustand loop registry hydrated from `/api/loops` (`useLoops`/`useLoopById`/`useLoopTree`/`useLoopRegistry`), replacing `fixtures/loops.ts`. **`lib/workspace.ts`** — a real `LOCAL_ORG`/`LOCAL_COMMANDER` (single local workspace). **`lib/roster.ts`** — `useAgentRoster` builds the roster from the ACTUAL provider/model selection (so the agent grid shows your Ollama models, not Claude tiers).
+- The other fixtures (`tasks/metrics/logs/memory/artifacts/gates`) are emptied to **honest empty-states**; `agents.ts` exposes the real canonical roster (planner/executor/reviewer/docs). Inspector reads real artifacts/memory via `/inspect` once a loop has run. `loop <name>` creates a real persisted department; an empty workspace shows a "create your first department" hint.
 
-## Watch-outs
-- **`@departments/events/audit` is a SEPARATE subpath** — it uses `node:crypto` and MUST NOT be re-exported from the events barrel, or the Next/webpack browser bundle breaks (it imports events transitively via realtime). Webpack-consumed packages (shared/events/realtime/web) use **extensionless** relative imports (moduleResolution `Bundler`); orchestration/cost stay `.js` (node-run).
-- **Health is now engine-owned** (rolling gate-pass rate) and emitted once per completed cycle; the driver no longer emits a `health` metric. `gateBlocked` uses the **full four-gate** `enforceBoundary('evaluate')` (any required gate), not just performance — Performance→IMPROVE is the canonical case, but any unsatisfied required gate blocks OPTIMIZE.
-- **Precedence is still binding:** caps + human gates OVERRIDE escalation; the Fable gate only governs *which model* a role uses, never whether the loop runs. An **unregistered org cap means uncapped** (`orgStatus` → `ok`).
-- **RBAC is one matrix, two enforcers:** `@departments/shared/rbac` is imported by both the cockpit (cosmetic gating) and the gateway `RbacGuard` (authoritative). Don't fork it.
-- **`0006` immutability** blocks UPDATE/DELETE on the spines unless `app.allow_purge='on'` — the per-request gateway role must NEVER set it; only the privileged retention/admin role does (also needed for an admin-initiated `ON DELETE CASCADE`).
-- The **frozen `Event` protocol (v1)** is binding. Phase 5 added NO kinds: gate/health/alert signals reuse `metric`/`log`/`status`; tamper-evidence is a sidecar.
+### Cockpit instrumentation + UX
+- **Settings → AI Provider** pane (`SettingsView.tsx`): provider radio, Ollama base URL + live model dropdown + Test connection + per-role dropdowns, Claude key field. → `store.providerConfig` (persisted) → sent in the `runLoop` POST body → forwarded as subprocess env by the run route.
+- **`LoopHeader`**: a provider/model badge + live **Cost/Tokens** readouts. The engine emits cumulative **`cost_usd` + `tokens`** `metric` events (frozen kind — NO protocol bump) → `useLiveUsage` drives the header + auto dashboard cards.
+- **Toasts** (`lib/toast.ts` + `shell/Toaster.tsx`) replace swallowed fetch errors (loop create, run failure, already-running, cadence edit). The SSE connection dot already lived in `StatusBar`.
+
+---
+
+## 🔜 What's left to finish — start here (prioritized)
+
+### A. Quick wins
+1. **Test the Claude provider.** Add an `sk-ant-…` key in Settings → AI Provider (or `ANTHROPIC_API_KEY` env), run a loop, confirm it streams + the cost meter shows non-zero. The runtime is `claude.ts`; if the Messages API shape needs an adjustment (e.g. an `output_config.effort` or a beta header), this is where. Consider streaming SSE for Claude (currently non-streaming, chunked into `output` events).
+2. **Make CI green on GitHub.** `.github/workflows/ci.yml` now runs on push/PR. Watch the first run, add any needed setup (it should be typecheck + lint + test + `next build`), fix anything red, and confirm the badge.
+3. **(optional) Push the phase branches.** `main` already contains all their commits; `phase-2…phase-6` are local-only. Push for reference if wanted, or delete them.
+
+### B. Web gaps (toward a polished product)
+4. **Tasks board projection.** The Kanban is an honest empty-state — there's no real tasks source. Build a projection from the loop's `TASKS.md` (or from phase/run events) into board cards. (Frozen `Event` protocol: do it as a derived view or a local `task` table, not a new event kind.)
+5. **Member-role edits.** `SettingsView` MembersPane PATCHes `/api/org/members/:id` which isn't implemented locally (optimistic swallow). Either implement a local members store or make it clearly local-only.
+6. **Alerts surface.** Engine alerts (`@departments/shared/alerts`) are raised engine-side + logged, but there's no cockpit banner. Add a patch channel (NOT a protocol bump) → a dismissible alerts surface.
+7. **ANALYTICS on real data.** It still synthesizes a health series when no live `health` is present, and the budget dashboard reads a client rollup over the registry. Wire it to persisted `gate_pass_daily`/`org_health_daily` (prod) or to the SQLite event history (local).
+8. **Activity map + screenshot transport** are labeled stubs (no geo source / no real screenshots). Wire real sources or keep clearly labeled.
+9. **a11y + responsive audit** — focus rings, keyboard nav on the tree/palette, prefers-reduced-motion, contrast, narrow widths.
+10. **(nice-later) Per-loop provider/model config.** Today provider/model is global (one selection for all loops). Could move it per-loop (write into the loop's `roles`).
+
+### C. Prod data plane — the big lift (Docker + Postgres + Temporal)
+11. **Bring up the stack:** `docker compose up -d` (Postgres+pgvector · Redis · Temporal · MinIO).
+12. **Implement the migration runner** — `pnpm db:migrate` is an **echo stub** (`packages/db/package.json`). Write a real runner that applies `sql/0001`→`0006` (+ `0100` if present), then run the RLS test doc **§A–§G** green and confirm the immutability triggers + `rls_violation_audit` (must be empty). Create a **non-superuser app role** so `FORCE RLS` is meaningful. Reconcile **`packages/memory/src/pgvector.ts` schema drift** vs `0001/0002`.
+13. **Drive the durable path:** run the Temporal worker (`apps/orchestrator`) + a real `loopWorkflow`/`ceoWorkflow`; confirm cadence-aware `IDLE_WAIT`, continue-as-new, and idempotency.
+14. **Connect the cockpit to Postgres (multi-tenant).** Today the cockpit reads its own local SQLite; the gateway `GET /loops` returns `[]` (`apps/gateway/src/app.controller.ts`). Implement the gateway resolvers + `OrgContextPool`, and decide the local-SQLite ↔ prod-Postgres relationship (likely: SQLite = single-user local, Postgres = hosted multi-tenant).
+
+### D. Real CMA (Anthropic Managed Agents)
+15. **Wire a concrete CMA client.** `cma.ts` is typed + unit-tested but lacks a real HTTP client for `client.beta.{agents,sessions,outcomes}`. Build it, then `runtimeFromConfig` can return a real `CmaRuntime`. Add CMA to the provider selector (`provider.ts`) alongside ollama/claude/fake.
+16. **Exercise with creds:** `USE_CMA_RUNTIME=1` + key → `CmaRuntime` + `CmaVault` + the **Fable refusal-safe** path + Scheduled Deployments; verify prompt-cache reads are non-zero and the Batch 50% holds.
+
+---
+
+## ✅ Cycles 1–5 — what's already done (summary)
+
+All complete and on `main`. Phase 1 **Foundations** (monorepo, design system, cockpit shell, data model + RLS, frozen `Event` protocol, cost/cache seams). Phase 2 **The Loop Engine** (a real cycle over hexagonal ports talking only to `LoopAgentRuntime`; real git artifacts; independent grader; model tiering; budget enforcement). Phase 3 **The Live Dashboard** (`@departments/realtime` spine — `EventStream` + resume-by-`seq`/dedupe + reconnect; SSE local transport + authored WS gateway; no-progress detector + manual single-step). Phase 4 **Hierarchy & Meta-Loop** (L1–L4 trees, CEO Batch reviews, scheduling, rolled-up health, concurrency/cadence + irreversible-action gating + org-wide cap). Phase 5 detail below.
+
+### Phase 5 — Production Hardening (detail kept; still load-bearing)
+- **Four gates ENFORCED + Health % = rolling gate-pass rate** (`@departments/rubrics/gates.ts`): `GateThresholdConfig`/`PHASE_GATES`/`enforceBoundary`/`gatePassRate`/`rollingHealth`/`HealthController` (scores 0–100). `engine.ts` rolls health from `verdict.gates`, raises a barrier that SKIPS IMPROVE on any failing required gate (records the failed cycle to MEMORY), and **emits the canonical `health` metric itself** at the cycle boundary; the driver no longer double-emits it. `CycleResult` has `gates`/`health`/`gateBlocked`.
+- **Cost finalized** (`@departments/cost`): `CacheAuditor` (mid-life cache degradation), `orgReport` (per-org budget dashboard), `requiresFableApproval`+`projectedCycleUsd` (Fable-5 cost gate → unapproved downgrades to Opus), `batchSavings`; `models.ts` `LOCKED_ROLE_EFFORT`+`validateLockedEffortPolicy`.
+- **Tamper-evidence:** `@departments/events/audit` (sha256 hash-chain SIDECAR — separate subpath, uses `node:crypto`) + `db/sql/0006_audit.sql` (immutability triggers purge-gated by `app.allow_purge`, `audit_log`, `rls_violation_audit`/`caching_audit`/`gate_pass_daily` `security_invoker` views; RLS doc §G).
+- **Alerting** (`@departments/shared/alerts`): `AlertBus` + `RefusalStormDetector` + `StreamHealthMonitor`; engine/driver raise budget/gate/cache/Fable/tool/no-progress; mirrored in `infra/k8s/alerting.yaml`.
+- **Security** (`agent-runtime/{security,vault}.ts`): secret scan/redact/`assertNoSecrets`, `wrapUntrusted` content fencing, `limited` deny-by-default networking, `VaultRef`+egress injection. **Gateway** `RbacGuard`+`@RequireCapability`+`AuthMiddleware`+`OrgContextInterceptor`.
+- **Multi-role** (`@departments/shared/rbac.ts`): `RBAC_MATRIX` (owner⊇commander⊇operator⊇viewer), `can`/`canAssignRole`. Cockpit role switcher + capability-gated transport/approvals + the full `SettingsView`.
+- **Infra:** `infra/k8s/production.yaml` (HPA/PDB/secrets) + 7 `docs/runbooks/`.
+
+---
+
+## ⚠ Watch-outs (don't break these)
+
+### Cycle 6
+- **The `ollama-local` $0 sentinel is billing-critical.** It's role `local` (OUTSIDE the escalation ladder) and $0 in BOTH `agent-runtime/models.ts` MODEL_TIERS and `cost/ledger.ts` PRICE_TABLE. `providerRoles(cfg)` pins every role to it for Ollama. Don't "fix" the agent-runtime closed `ModelId` union by adding real Ollama model names — the model name rides on the runtime instance; the union stays Claude-shaped + the sentinel.
+- **One provider seam, two consumers:** `provider.ts` (`runtimeFromConfig`/`providerRoles`) drives BOTH `orchestration/cli.ts` and `apps/orchestrator/activities.ts`. Keep them in sync — don't fork the per-role binding.
+- **`node:sqlite` is server-only.** `lib/server/db.ts` runs only in Next route handlers (`runtime = 'nodejs'`). Never import it into a client component or the browser bundle breaks.
+- **Ollama thinking models need `think:false`** or `message.content` comes back empty (the budget is spent on `thinking`). The runtime also falls back to `thinking` text if content is empty.
+- **Pushing requires the `workflow` gh scope** (the repo has `.github/workflows/ci.yml`). If a future push of workflow changes is rejected, run `gh auth refresh -h github.com -s workflow`.
+
+### Carried from Phase 5 (still binding)
+- **`@departments/events/audit` is a SEPARATE subpath** — uses `node:crypto`; MUST NOT be re-exported from the events barrel or the Next/webpack browser bundle breaks. Webpack-consumed packages (shared/events/realtime/web) use **extensionless** relative imports (moduleResolution `Bundler`); orchestration/cost/agent-runtime stay `.js` (node-run).
+- **The frozen `Event` protocol (v1) is binding.** No new kinds were added — gate/health/alert/cost/token signals all reuse `metric`/`log`/`status`; tamper-evidence is a sidecar. Keep it that way (a tasks/alerts patch channel is a separate, non-protocol addition).
+- **Health is engine-owned** (rolling gate-pass rate), emitted once per completed cycle; `gateBlocked` uses the full four-gate `enforceBoundary('evaluate')`.
+- **Precedence is binding:** cost caps + human gates OVERRIDE escalation; the Fable gate governs *which model*, never whether the loop runs. An **unregistered org cap means uncapped**.
+- **RBAC is one matrix, two enforcers** (`@departments/shared/rbac`): cockpit (cosmetic) + gateway `RbacGuard` (authoritative). Don't fork it.
+- **`0006` immutability** blocks UPDATE/DELETE on the spines unless `app.allow_purge='on'` — the per-request gateway role must NEVER set it; only the privileged retention/admin role does.
+- **`.volumes/`** (per-loop git repos + memory + the SQLite DB) is gitignored runtime state — never commit it. The local DB starts empty.
