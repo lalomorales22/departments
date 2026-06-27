@@ -51,9 +51,12 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
         if (!closed) controller.enqueue(enc.encode(s));
       };
       const frame = (e: DeptEvent) =>
-        // `id:` = seq so the browser resumes via Last-Event-ID; `event:` = kind for
-        // optional client-side addEventListener demuxing.
-        safeEnqueue(`id: ${e.seq}\nevent: ${e.kind}\ndata: ${JSON.stringify(e)}\n\n`);
+        // DeptEvents ride the DEFAULT (unnamed) SSE channel so the browser delivers them
+        // to `EventSource.onmessage` — the client's single handler. Naming them
+        // (`event: <kind>`) would route them to per-kind `addEventListener` listeners the
+        // client doesn't register, so they'd silently never arrive. `id:` = seq still
+        // drives Last-Event-ID resume; the kind already rides inside the JSON payload.
+        safeEnqueue(`id: ${e.seq}\ndata: ${JSON.stringify(e)}\n\n`);
 
       // Open: tell the client where the cursor landed, then subscribe (which first
       // drains the backlog after `cursor`, then tails live) — exactly-once per seq.
