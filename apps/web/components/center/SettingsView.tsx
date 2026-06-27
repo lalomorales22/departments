@@ -252,7 +252,7 @@ function ProviderPane() {
                     {role}
                   </span>
                   <select
-                    value={cfg.ollamaRoleModels[role]}
+                    value={cfg.ollamaRoleModels?.[role] ?? ''}
                     disabled={!canEdit || !reachable || models.length === 0}
                     aria-label={`${role} model`}
                     onChange={(e) => setCfg({ ollamaRoleModels: { ...cfg.ollamaRoleModels, [role]: e.target.value } })}

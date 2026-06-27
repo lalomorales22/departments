@@ -31,7 +31,8 @@ const CLAUDE_TIER: Record<RosterEntry['tier'], { modelId: string; effort: string
 
 function modelForRole(cfg: ProviderConfig, entry: RosterEntry): { modelId: string; effort: string | null } {
   if (cfg.provider === 'ollama') {
-    const m = cfg.ollamaRoleModels[entry.role] || cfg.ollamaModel || '— pick a model —';
+    // Optional-chain: an older persisted config (pre per-role models) has no map.
+    const m = cfg.ollamaRoleModels?.[entry.role] || cfg.ollamaModel || '— pick a model —';
     return { modelId: m, effort: null }; // local models are knobless
   }
   // Claude: a pinned model for every role, else the per-role tier default.

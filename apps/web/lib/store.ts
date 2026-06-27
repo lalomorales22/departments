@@ -199,6 +199,24 @@ export const useCockpit = create<CockpitState>()(
         gateThresholds: s.gateThresholds,
         providerConfig: s.providerConfig,
       }),
+      // Deep-merge persisted state over defaults so a config saved BEFORE a field existed
+      // (e.g. `ollamaRoleModels`) is backfilled instead of replacing the whole object —
+      // otherwise an old localStorage entry leaves nested fields undefined and crashes.
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<CockpitState>;
+        return {
+          ...current,
+          ...p,
+          providerConfig: {
+            ...DEFAULT_PROVIDER_CONFIG,
+            ...(p.providerConfig ?? {}),
+            ollamaRoleModels: {
+              ...DEFAULT_PROVIDER_CONFIG.ollamaRoleModels,
+              ...(p.providerConfig?.ollamaRoleModels ?? {}),
+            },
+          },
+        };
+      },
     },
   ),
 );
