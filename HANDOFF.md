@@ -2,9 +2,9 @@
 
 > The cross-cycle memory of this repo's own `loop software-builder`. **MEMORY is the only legal handoff between cycles** — the next PLAN reads this first. Keep it truthful and current.
 
-- **Cycle:** 6 (Local AI + Real Data) — shipped
+- **Cycle:** 6 (Local AI + Real Data) + Phase 7 (Live Run Feedback) — both shipped · **post-ship fix (2026-06-27):** live SSE delivery — a running loop now actually renders (was silently dark)
 - **Updated:** 2026-06-27
-- **Repo:** 🌐 **PUBLIC on GitHub** → https://github.com/lalomorales22/departments · default branch **`main`** (account `lalomorales22`). All six phases are merged to `main` (clean fast-forward) and pushed. Working tree clean. `origin` = `https://github.com/lalomorales22/departments.git`; `main` tracks `origin/main`.
+- **Repo:** 🌐 **PUBLIC on GitHub** → https://github.com/lalomorales22/departments · default branch **`main`** (account `lalomorales22`). Phases 1–7 + the live-SSE fix are on `main` and pushed. (Heads-up: Phase 7 `21540d2` had been **local-only** until 2026-06-27 — pushed then alongside the fix `ebea5bd` + a README nit `27356e1`, range `f4a0af5..27356e1`.) Working tree clean. `origin` = `https://github.com/lalomorales22/departments.git`; `main` tracks `origin/main`.
 
 ---
 
@@ -15,6 +15,7 @@
 - **Verified:** 13/13 packages typecheck · 11 packages' unit tests pass · `next build` + `next lint` clean · real cockpit runs drove `qwen3.5:2b` (and `gemma4:12b-it-qat`) through all five phases (incl. a real rework) at **$0**, with events persisted and per-role models routed correctly.
 - **Untested:** the **Claude** provider is code-complete but has never run (no API key on this machine). CI on GitHub hasn't been observed green yet.
 - **Gated (authored, not exercised here):** the whole prod data plane — Postgres/pgvector, Redis, Temporal, MinIO, the NestJS gateway, real CMA + Vaults. These need `docker compose up -d` and/or creds.
+- **Post-ship fix (2026-06-27, `ebea5bd`) — the live cockpit now actually renders a run.** A latent bug sent engine events on a *named* SSE channel (`event: <kind>`) while the client listens only on `EventSource.onmessage` (the default channel), so a running loop showed **"warming up · 0 tokens"** with a frozen pipeline even though the engine + EventStream + SQLite all worked. Now emitted on the default channel. **Verified end-to-end** vs the live dev server: 99 events delivered to `onmessage`, tokens ticking, all five phases streamed, run completed to idle (Ollama `qwen3.5:2b`). Resolves the old line-30 caveat.
 
 ### ▶ Run it right now
 
@@ -27,7 +28,7 @@ pnpm --filter @departments/web dev          # cockpit → http://localhost:3000
 ```
 Headless CLI: `DEPARTMENTS_PROVIDER=ollama OLLAMA_MODEL=gemma4:12b-it-qat pnpm --filter @departments/orchestration exec tsx src/cli.ts marketing --stream --cycles 1`
 
-> ⚠️ **NOTE on the cockpit page:** verify it renders in a browser at `http://localhost:3000` (or `http://127.0.0.1:3000`). In the build session the page served 200 via curl and every API worked, but a visual screenshot check was blocked by a sandbox boundary — so a human eyeball pass on the UI is still worth doing.
+> ✅ **Cockpit live view — RESOLVED (2026-06-27).** The old "never eyeballed in a browser" caveat is closed: a latent SSE-channel bug (above) kept the live UI dark; fixed in `ebea5bd` and verified end-to-end. **Now binding:** keep DeptEvent SSE frames on the DEFAULT channel — see the Cycle-6 watch-outs below. (Aside, found while testing: the Claude-in-Chrome browser resolves `localhost:3000` to an unrelated app, so the in-browser eyeball was done via a faithful `onmessage` client against the real dev server, not the extension.)
 
 ---
 
@@ -59,13 +60,13 @@ Headless CLI: `DEPARTMENTS_PROVIDER=ollama OLLAMA_MODEL=gemma4:12b-it-qat pnpm -
 
 ## 🔜 Next up — UX & Information Architecture (3 phases · full detail in `TASKS.md` Phases 7–9)
 
-The platform **runs**; the next work makes it **legible and well-structured to use** (driven by hands-on feedback). Build in order — **Phase 8 is the heaviest** (it reframes where everything lives), so the quick, high-value Phase 7 goes first.
+The platform **runs** and a running loop is now **legible** — Phase 7 shipped. The remaining UX work makes it **well-structured to use** (driven by hands-on feedback). **Phase 8 is the heaviest** (it reframes where everything lives) — start there, then Phase 9.
 
-- **Phase 7 — Live Run Feedback.** A running loop currently says "Running" but *looks* idle. Add a **progress indicator on the loop-pipeline cards** — the active PLAN→EXECUTE→EVALUATE→OPTIMIZE→MEMORY stage fills/pulses, with "phase 3/5" + cycle N/M — and surface elapsed/tokens/streaming output so it's obviously alive. Pipeline = `apps/web/components/center/LoopPipeline.tsx`; progress derives from the live feed (`lib/live.ts` `useLivePipeline`).
+- **Phase 7 — Live Run Feedback. ✅ SHIPPED** (`21540d2`; made to actually render by the live-SSE fix `ebea5bd`). The loop-pipeline cards show per-phase progress — the active PLAN→EXECUTE→EVALUATE→OPTIMIZE→MEMORY stage fills/pulses, "phase n of 5" + cycle N/M — with a live elapsed/tokens/streamed-line strip under the pipeline. Pipeline = `apps/web/components/center/LoopPipeline.tsx`; progress derives from the live feed (`lib/live.ts` `useLivePipeline`).
 - **Phase 8 — Information Architecture (the restructure).** Make the **6 top tabs a whole-org mega-dashboard** (aggregate ALL loops); clicking a loop in the left hierarchy opens **that loop's own workspace page** (its pipeline/agents/tasks/artifacts/history/console). Merge the right **Inspector** (DETAILS/CONFIG/HISTORY) into **one scrolling page**; make the right sidebar **resizable + collapsible**. Wire **New Loop / New Agent / New Task** (⌘N/⌘A/⌘T) to **dedicated creation modals** — today all three fall through to the global-search window (⌘K). Touches `AppShell`, `TabNav`/`CenterColumn`, `LeftRail`/`LoopTree`, `InspectorPanel`, `QuickActionList`/`CommandPalette`.
 - **Phase 9 — Members & Integrations.** Drop the **4 default fake members** (Alex/Commander/Sam/Jordan in `SettingsView` `MembersPane`); add real **add/delete member** (persisted), role-gated by `canAssignRole`. Fix the **Integrations** page's "GATED (DOCKER/CREDS)" labels to be honest — **Ollama is live/connected** locally; CMA/Temporal/Redis/Postgres are genuinely gated.
 
-> To pick up in a fresh chat: read this file, then `TASKS.md` Phases 7–9, and start on **Phase 7**.
+> To pick up in a fresh chat: read this file, then `TASKS.md` Phases 8–9, and start on **Phase 8**.
 
 ## 🗄 Later — prod data plane & cloud (backlog, after the UX phases)
 
@@ -113,6 +114,7 @@ All complete and on `main`. Phase 1 **Foundations** (monorepo, design system, co
 ## ⚠ Watch-outs (don't break these)
 
 ### Cycle 6
+- **Live SSE MUST ride the DEFAULT channel (2026-06-27, `ebea5bd`).** The cockpit client (`apps/web/lib/realtime.ts`) listens ONLY on `EventSource.onmessage`, which fires solely for default/unnamed SSE events. The stream route (`apps/web/app/api/loops/[id]/stream/route.ts`) MUST send each DeptEvent as an `id:` + `data:` frame with **NO `event: <kind>` line** — naming the frames routes them to per-kind `addEventListener` the client never registers, so nothing renders (latent since Phase 3; masked by fixtures until Phase 6 de-mocked the cockpit). The `kind` already rides in the JSON; `id:`/seq still drives Last-Event-ID resume; the `event: open` metadata frame staying named is fine (the client ignores it).
 - **The `ollama-local` $0 sentinel is billing-critical.** It's role `local` (OUTSIDE the escalation ladder) and $0 in BOTH `agent-runtime/models.ts` MODEL_TIERS and `cost/ledger.ts` PRICE_TABLE. `providerRoles(cfg)` pins every role to it for Ollama. Don't "fix" the agent-runtime closed `ModelId` union by adding real Ollama model names — the model name rides on the runtime instance; the union stays Claude-shaped + the sentinel.
 - **One provider seam, two consumers:** `provider.ts` (`runtimeFromConfig`/`providerRoles`) drives BOTH `orchestration/cli.ts` and `apps/orchestrator/activities.ts`. Keep them in sync — don't fork the per-role binding.
 - **`node:sqlite` is server-only.** `lib/server/db.ts` runs only in Next route handlers (`runtime = 'nodejs'`). Never import it into a client component or the browser bundle breaks.
