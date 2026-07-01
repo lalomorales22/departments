@@ -46,8 +46,7 @@ function Stat({ label, value, sub, accent }: { label: string; value: string; sub
  */
 export function AnalyticsView() {
   const selectedLoopId = useCockpit((s) => s.selectedLoopId);
-  const setSelectedLoop = useCockpit((s) => s.setSelectedLoop);
-  const setTab = useCockpit((s) => s.setTab);
+  const enterLoop = useCockpit((s) => s.enterLoop);
   const { health: liveHealth, live } = useLiveHealth(selectedLoopId);
   const tree = useLoopTree();
 
@@ -58,10 +57,8 @@ export function AnalyticsView() {
     return { forest, agg: aggregate(forest), allLoops, units: forest };
   }, [tree, selectedLoopId, liveHealth, live]);
 
-  const drill = (id: string) => {
-    setSelectedLoop(id);
-    setTab('DASHBOARD');
-  };
+  // Drilling into a loop opens its own workspace (Phase 8 IA).
+  const drill = (id: string) => enterLoop(id);
 
   const running = agg.byStatus.running;
   const series = synthSeries(agg.avgHealth);

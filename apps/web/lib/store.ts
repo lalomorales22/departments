@@ -15,7 +15,13 @@ export const TABS = [
 export type Tab = (typeof TABS)[number];
 
 export type LogTab = 'LOGS' | 'DEBUG' | 'OUTPUT';
-export type InspectorTab = 'DETAILS' | 'CONFIG' | 'HISTORY';
+
+/**
+ * Two navigation modes (Phase 8 IA). ORG = the six top tabs aggregate across ALL loops
+ * (a whole-org mega-dashboard); LOOP = a single selected loop's dedicated workspace page.
+ * Clicking a loop in the hierarchy enters LOOP view; a breadcrumb returns to ORG.
+ */
+export type ViewMode = 'org' | 'loop';
 
 export const SETTINGS_TABS = ['PROVIDER', 'DEFAULTS', 'GATES', 'MEMBERS', 'BILLING', 'INTEGRATIONS'] as const;
 export type SettingsTab = (typeof SETTINGS_TABS)[number];
@@ -52,7 +58,17 @@ export const DEFAULT_PROVIDER_CONFIG: ProviderConfig = {
 };
 
 interface CockpitState {
-  /** Currently focused loop (drives center + inspector). */
+  /**
+   * ORG (whole-org aggregate tabs) vs LOOP (a single loop's workspace). Clicking a loop
+   * enters LOOP view; the breadcrumb / back-to-org returns to ORG.
+   */
+  viewMode: ViewMode;
+  /** Open a loop's dedicated workspace (selects it + switches to LOOP view). */
+  enterLoop: (id: string) => void;
+  /** Return to the whole-org view (keeps the loop selected for context). */
+  backToOrg: () => void;
+
+  /** Currently focused loop (drives the per-loop workspace + inspector). */
   selectedLoopId: string;
   setSelectedLoop: (id: string) => void;
 
@@ -66,14 +82,15 @@ interface CockpitState {
   logTab: LogTab;
   setLogTab: (t: LogTab) => void;
 
-  inspectorTab: InspectorTab;
-  setInspectorTab: (t: InspectorTab) => void;
-
   /** Panel collapse (persisted). */
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   toggleLeft: () => void;
   toggleRight: () => void;
+
+  /** Right inspector width in px (persisted, drag-resizable + clamped). */
+  rightWidth: number;
+  setRightWidth: (px: number) => void;
 
   /** Command palette / search (cmdk) + shortcut sheet. */
   commandOpen: boolean;
@@ -86,6 +103,18 @@ interface CockpitState {
   setImportOpen: (open: boolean) => void;
   /** Jump to ARTIFACTS and open the import modal (⌘I / command palette / quick action). */
   openImport: () => void;
+
+  /**
+   * Dedicated creation modals (Phase 8): ⌘N New Loop, ⌘A New Agent, ⌘T New Task — each
+   * opens its OWN modal instead of falling through to the ⌘K search window. Agent/Task are
+   * scoped to a loop, so opening them also carries the loop they target.
+   */
+  newLoopOpen: boolean;
+  setNewLoopOpen: (open: boolean) => void;
+  newAgentOpen: boolean;
+  setNewAgentOpen: (open: boolean) => void;
+  newTaskOpen: boolean;
+  setNewTaskOpen: (open: boolean) => void;
 
   /** Stub focus targets for chords whose panels are not built yet. */
   mapFocused: boolean;
@@ -130,8 +159,14 @@ interface CockpitState {
 export const useCockpit = create<CockpitState>()(
   persist(
     (set) => ({
+      // The whole-org dashboard is the landing view; clicking a loop enters its workspace.
+      viewMode: 'org',
+      enterLoop: (id) => set({ selectedLoopId: id, viewMode: 'loop', selectedAgentId: null }),
+      backToOrg: () => set({ viewMode: 'org' }),
+
       // Empty until the loop registry hydrates from the DB (then the first loop, or a
-      // freshly created one, is selected). No fixture id is assumed.
+      // freshly created one, is selected). No fixture id is assumed. setSelectedLoop does
+      // NOT switch view (used to keep a valid selection while staying in ORG); enterLoop does.
       selectedLoopId: '',
       setSelectedLoop: (id) => set({ selectedLoopId: id, selectedAgentId: null }),
 
@@ -140,18 +175,20 @@ export const useCockpit = create<CockpitState>()(
         set((s) => ({ selectedAgentId: s.selectedAgentId === id ? null : id })),
 
       activeTab: 'DASHBOARD',
-      setTab: (tab) => set({ activeTab: tab }),
+      // The six tabs ARE the org lens — selecting one always shows the whole-org aggregate,
+      // returning from any loop workspace you'd drilled into.
+      setTab: (tab) => set({ activeTab: tab, viewMode: 'org' }),
 
       logTab: 'LOGS',
       setLogTab: (t) => set({ logTab: t }),
-
-      inspectorTab: 'DETAILS',
-      setInspectorTab: (t) => set({ inspectorTab: t }),
 
       leftCollapsed: false,
       rightCollapsed: false,
       toggleLeft: () => set((s) => ({ leftCollapsed: !s.leftCollapsed })),
       toggleRight: () => set((s) => ({ rightCollapsed: !s.rightCollapsed })),
+
+      rightWidth: 344,
+      setRightWidth: (px) => set({ rightWidth: Math.max(280, Math.min(560, Math.round(px))) }),
 
       commandOpen: false,
       setCommandOpen: (open) => set({ commandOpen: open }),
@@ -160,7 +197,14 @@ export const useCockpit = create<CockpitState>()(
 
       importOpen: false,
       setImportOpen: (open) => set({ importOpen: open }),
-      openImport: () => set({ activeTab: 'ARTIFACTS', importOpen: true, commandOpen: false }),
+      openImport: () => set({ activeTab: 'ARTIFACTS', viewMode: 'org', importOpen: true, commandOpen: false }),
+
+      newLoopOpen: false,
+      setNewLoopOpen: (open) => set({ newLoopOpen: open, commandOpen: false }),
+      newAgentOpen: false,
+      setNewAgentOpen: (open) => set({ newAgentOpen: open, commandOpen: false }),
+      newTaskOpen: false,
+      setNewTaskOpen: (open) => set({ newTaskOpen: open, commandOpen: false }),
 
       mapFocused: false,
       setMapFocused: (v) => set({ mapFocused: v }),
@@ -190,11 +234,12 @@ export const useCockpit = create<CockpitState>()(
     {
       name: 'departments-cockpit',
       partialize: (s) => ({
+        viewMode: s.viewMode,
         selectedLoopId: s.selectedLoopId,
         leftCollapsed: s.leftCollapsed,
         rightCollapsed: s.rightCollapsed,
+        rightWidth: s.rightWidth,
         logTab: s.logTab,
-        inspectorTab: s.inspectorTab,
         userRole: s.userRole,
         gateThresholds: s.gateThresholds,
         providerConfig: s.providerConfig,

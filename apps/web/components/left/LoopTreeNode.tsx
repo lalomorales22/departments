@@ -23,7 +23,7 @@ function healthAccent(h: number): 'green' | 'amber' | 'red' {
 export function LoopTreeNode({ node, depth }: { node: TreeRollup; depth: number }) {
   const { loop, children } = node;
   const selectedLoopId = useCockpit((s) => s.selectedLoopId);
-  const setSelectedLoop = useCockpit((s) => s.setSelectedLoop);
+  const enterLoop = useCockpit((s) => s.enterLoop);
   const [expanded, setExpanded] = useState(true);
 
   const hasChildren = children.length > 0;
@@ -40,11 +40,11 @@ export function LoopTreeNode({ node, depth }: { node: TreeRollup; depth: number 
         role="button"
         tabIndex={0}
         aria-current={selected ? 'true' : undefined}
-        onClick={() => setSelectedLoop(loop.id)}
+        onClick={() => enterLoop(loop.id)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
-            setSelectedLoop(loop.id);
+            enterLoop(loop.id);
           }
         }}
         style={{ paddingLeft: 8 + depth * 14 }}

@@ -71,9 +71,12 @@ export function CommandPalette() {
   const LOOPS = useLoops();
   const open = useCockpit((s) => s.commandOpen);
   const setCommandOpen = useCockpit((s) => s.setCommandOpen);
-  const setSelectedLoop = useCockpit((s) => s.setSelectedLoop);
+  const enterLoop = useCockpit((s) => s.enterLoop);
   const setTab = useCockpit((s) => s.setTab);
   const openImport = useCockpit((s) => s.openImport);
+  const setNewLoopOpen = useCockpit((s) => s.setNewLoopOpen);
+  const setNewAgentOpen = useCockpit((s) => s.setNewAgentOpen);
+  const setNewTaskOpen = useCockpit((s) => s.setNewTaskOpen);
 
   const close = useCallback(() => setCommandOpen(false), [setCommandOpen]);
 
@@ -129,7 +132,7 @@ export function CommandPalette() {
                   value={`run ${loop.name} ${loop.displayName}`}
                   icon={Play}
                   onSelect={() => {
-                    setSelectedLoop(loop.id);
+                    enterLoop(loop.id);
                     close();
                   }}
                   trailing={
@@ -168,13 +171,13 @@ export function CommandPalette() {
             </Command.Group>
 
             <Command.Group heading="ACTIONS" className={GROUP_CLASS}>
-              <PaletteItem value="new loop" icon={Plus} onSelect={close}>
+              <PaletteItem value="new loop department" icon={Plus} onSelect={() => setNewLoopOpen(true)}>
                 New Loop
               </PaletteItem>
-              <PaletteItem value="new agent" icon={UserPlus} onSelect={close}>
+              <PaletteItem value="new agent" icon={UserPlus} onSelect={() => setNewAgentOpen(true)}>
                 New Agent
               </PaletteItem>
-              <PaletteItem value="new task" icon={ListPlus} onSelect={close}>
+              <PaletteItem value="new task" icon={ListPlus} onSelect={() => setNewTaskOpen(true)}>
                 New Task
               </PaletteItem>
               <PaletteItem value="import artifact" icon={FileDown} onSelect={openImport}>

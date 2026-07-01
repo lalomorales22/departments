@@ -30,10 +30,14 @@ export function KeyboardChords() {
       if (e.key === 'Escape') {
         if (s.commandOpen) s.setCommandOpen(false);
         if (s.shortcutSheetOpen) s.setShortcutSheetOpen(false);
+        if (s.newLoopOpen) s.setNewLoopOpen(false);
+        if (s.newAgentOpen) s.setNewAgentOpen(false);
+        if (s.newTaskOpen) s.setNewTaskOpen(false);
         return;
       }
 
-      const overlayOpen = s.commandOpen || s.shortcutSheetOpen;
+      const overlayOpen =
+        s.commandOpen || s.shortcutSheetOpen || s.newLoopOpen || s.newAgentOpen || s.newTaskOpen;
 
       // ── palette open/toggle/find — allowed even over an overlay ───────
       if (mod && (k === 'k' || k === 'p')) {
@@ -74,10 +78,19 @@ export function KeyboardChords() {
             s.openImport();
             return;
           case 'n':
-          case 'a':
-          case 't':
+            // New Loop — its own modal, not the search window.
             e.preventDefault();
-            s.setCommandOpen(true);
+            s.setNewLoopOpen(true);
+            return;
+          case 'a':
+            // New Agent.
+            e.preventDefault();
+            s.setNewAgentOpen(true);
+            return;
+          case 't':
+            // New Task.
+            e.preventDefault();
+            s.setNewTaskOpen(true);
             return;
           default:
             return;

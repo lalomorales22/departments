@@ -13,7 +13,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type { DeptEvent } from '@departments/events';
-import type { Loop, LoopLevel, LoopStatus, Phase } from '@departments/shared';
+import type { Loop, LoopLevel, LoopStatus, Phase, User, UserRole } from '@departments/shared';
+import { LOCAL_COMMANDER } from '@/lib/workspace';
 
 const DB_PATH = resolve(process.cwd(), '..', '..', '.volumes', 'departments.db');
 
@@ -54,6 +55,15 @@ function getDb(): DatabaseSync {
       ts TEXT NOT NULL,
       payload TEXT NOT NULL,
       PRIMARY KEY (loop_id, seq)
+    );
+    CREATE TABLE IF NOT EXISTS members (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL,
+      role TEXT NOT NULL,
+      initials TEXT NOT NULL,
+      created_at TEXT NOT NULL
     );
   `);
   g.__departmentsDb = db;
@@ -228,6 +238,109 @@ export function recordEvent(e: DeptEvent): void {
 export function addSpend(loopId: string, costUsd: number, now: string): void {
   if (!getLoopRow(loopId)) return;
   getDb().prepare('UPDATE loops SET spent_usd = spent_usd + ?, updated_at = ? WHERE id = ?').run(costUsd, now, loopId);
+}
+
+// ── Members (org roster) ──────────────────────────────────────────────────────
+
+interface MemberRow {
+  id: string;
+  org_id: string;
+  name: string;
+  email: string;
+  role: string;
+  initials: string;
+  created_at: string;
+}
+
+function rowToMember(r: MemberRow): User {
+  return {
+    id: r.id,
+    orgId: r.org_id,
+    name: r.name,
+    email: r.email,
+    role: r.role as UserRole,
+    initials: r.initials,
+    createdAt: r.created_at,
+  };
+}
+
+/** First letters of the first two words (else the first two chars), uppercased. */
+export function initialsFrom(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  const first = words[0] ?? '';
+  const second = words[1] ?? '';
+  const letters = second ? (first[0] ?? '') + (second[0] ?? '') : first.slice(0, 2);
+  return letters.toUpperCase() || '?';
+}
+
+/**
+ * List an org's members. The roster starts from JUST the real local commander (seeded on
+ * first read) — no demo people — so add/delete operate on real, persisted rows.
+ */
+export function listMembers(orgId: string): User[] {
+  const db = getDb();
+  const rows = db
+    .prepare('SELECT * FROM members WHERE org_id = ? ORDER BY created_at ASC')
+    .all(orgId) as unknown as MemberRow[];
+  if (rows.length === 0 && orgId === LOCAL_COMMANDER.orgId) {
+    db.prepare('INSERT INTO members (id, org_id, name, email, role, initials, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+      LOCAL_COMMANDER.id,
+      LOCAL_COMMANDER.orgId,
+      LOCAL_COMMANDER.name,
+      LOCAL_COMMANDER.email,
+      LOCAL_COMMANDER.role,
+      LOCAL_COMMANDER.initials,
+      LOCAL_COMMANDER.createdAt,
+    );
+    return listMembers(orgId);
+  }
+  return rows.map(rowToMember);
+}
+
+function getMemberRow(id: string): User | null {
+  const row = getDb().prepare('SELECT * FROM members WHERE id = ?').get(id) as unknown as MemberRow | undefined;
+  return row ? rowToMember(row) : null;
+}
+
+export interface CreateMemberInput {
+  id: string;
+  orgId: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  now: string;
+}
+
+export function createMember(input: CreateMemberInput): User {
+  getDb()
+    .prepare('INSERT INTO members (id, org_id, name, email, role, initials, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(input.id, input.orgId, input.name, input.email, input.role, initialsFrom(input.name), input.now);
+  return getMemberRow(input.id)!;
+}
+
+export function setMemberRole(id: string, role: UserRole): User | null {
+  const existing = getMemberRow(id);
+  if (!existing) return null;
+  getDb().prepare('UPDATE members SET role = ? WHERE id = ?').run(role, id);
+  return getMemberRow(id);
+}
+
+/**
+ * Delete a member, refusing the two unsafe cases: removing yourself (the local commander)
+ * or removing the org's last owner. Returns `{ ok, reason? }` so the route can 4xx cleanly.
+ */
+export function deleteMember(id: string): { ok: boolean; reason?: string } {
+  const member = getMemberRow(id);
+  if (!member) return { ok: false, reason: 'no such member' };
+  if (id === LOCAL_COMMANDER.id) return { ok: false, reason: "you can't remove yourself" };
+  if (member.role === 'owner') {
+    const owners = (getDb()
+      .prepare("SELECT COUNT(*) AS n FROM members WHERE org_id = ? AND role = 'owner'")
+      .get(member.orgId) as unknown as { n: number }).n;
+    if (owners <= 1) return { ok: false, reason: "can't remove the last owner" };
+  }
+  getDb().prepare('DELETE FROM members WHERE id = ?').run(id);
+  return { ok: true };
 }
 
 /** Replay persisted events after a cursor (history that survives restart). */

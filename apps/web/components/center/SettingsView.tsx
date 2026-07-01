@@ -10,22 +10,17 @@ import {
   type RubricCategory,
   type UserRole,
 } from '@departments/shared';
+import { Plus, Trash2 } from 'lucide-react';
 import { SectionLabel } from '@/components/atoms';
 import { useLoopTree } from '@/lib/loops-client';
-import { LOCAL_ORG } from '@/lib/workspace';
+import { useMembers, useMembersRegistry } from '@/lib/members-client';
+import { LOCAL_COMMANDER, LOCAL_ORG } from '@/lib/workspace';
 import { aggregate, flattenRollup, rollupForest } from '@/lib/tree';
 import { accentVar, rubricAccent } from '@/lib/status-theme';
 import { useCockpit, SETTINGS_TABS, ORCHESTRATOR_ROLES, type SettingsTab } from '@/lib/store';
 import { useCan, useUserRole } from '@/lib/rbac';
+import { toast } from '@/lib/toast';
 import { cn } from '@/lib/cn';
-
-/** Demo org roster (prod hydrates from GET /api/org/members). */
-const MEMBERS: { id: string; name: string; email: string; role: UserRole }[] = [
-  { id: 'u-owner', name: 'Alex Rivera', email: 'alex@southbay.example', role: 'owner' },
-  { id: 'u-cmdr', name: 'Commander', email: 'southbayitsolutions619@gmail.com', role: 'commander' },
-  { id: 'u-op', name: 'Sam Operator', email: 'sam@southbay.example', role: 'operator' },
-  { id: 'u-view', name: 'Jordan Viewer', email: 'jordan@southbay.example', role: 'viewer' },
-];
 
 const DEFAULT_GATE_THRESHOLD = 60;
 
@@ -456,11 +451,28 @@ function GatesPane() {
 function MembersPane() {
   const actor = useUserRole();
   const canManage = useCan('members.manage');
+  const members = useMembers();
+  const { hydrate, setRole, remove } = useMembersRegistry();
+
+  // Hydrate the real roster once (seeded server-side with just the local commander).
+  useEffect(() => {
+    void hydrate();
+  }, [hydrate]);
+
+  const ownerCount = members.filter((m) => m.role === 'owner').length;
+
+  async function onDelete(id: string, name: string) {
+    const res = await remove(id);
+    if (res.ok) toast.success(`Removed ${name}.`);
+    else toast.error(res.error ?? 'Could not remove member.');
+  }
+
   return (
     <div className="panel p-3">
-      <SectionLabel right={<span className="tabular text-2xs text-faint">{MEMBERS.length} MEMBERS</span>}>
+      <SectionLabel right={<span className="tabular text-2xs text-faint">{members.length} MEMBERS</span>}>
         Members &amp; Roles · {LOCAL_ORG.name}
       </SectionLabel>
+
       <div className="mt-3 overflow-hidden rounded-sm border border-hairline">
         <table className="w-full border-collapse text-left">
           <thead>
@@ -468,46 +480,142 @@ function MembersPane() {
               <th className="eyebrow px-2 py-1 font-normal">Member</th>
               <th className="eyebrow px-2 py-1 font-normal">Email</th>
               <th className="eyebrow px-2 py-1 text-right font-normal">Role</th>
+              {canManage && <th className="eyebrow px-2 py-1 text-right font-normal">·</th>}
             </tr>
           </thead>
           <tbody>
-            {MEMBERS.map((m) => (
-              <tr key={m.id} className="border-b border-hairline/60 last:border-0">
-                <td className="px-2 py-1.5 text-xs text-text">{m.name}</td>
-                <td className="tabular max-w-[12rem] truncate px-2 py-1.5 text-2xs text-muted">{m.email}</td>
-                <td className="px-2 py-1.5 text-right">
-                  {canManage ? (
-                    <select
-                      defaultValue={m.role}
-                      aria-label={`${m.name} role`}
-                      className="tabular rounded-sm border border-hairline bg-bg-deep px-1.5 py-0.5 text-2xs uppercase text-text focus-ring"
-                      onChange={(e) => {
-                        void fetch(`/api/org/members/${encodeURIComponent(m.id)}`, {
-                          method: 'PATCH',
-                          headers: { 'content-type': 'application/json' },
-                          body: JSON.stringify({ role: e.target.value }),
-                        }).catch(() => {
-                          /* optimistic — durable write is the gateway */
-                        });
-                      }}
-                    >
-                      {ROLES_BY_SENIORITY.map((r) => (
-                        <option key={r} value={r} disabled={r !== m.role && !canAssignRole(actor, r)}>
-                          {USER_ROLE_LABELS[r]}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <span className="tabular text-2xs uppercase text-muted">{USER_ROLE_LABELS[m.role]}</span>
+            {members.map((m) => {
+              const isSelf = m.id === LOCAL_COMMANDER.id;
+              const lastOwner = m.role === 'owner' && ownerCount <= 1;
+              const canEditRole = canManage && canAssignRole(actor, m.role);
+              const blockReason = isSelf ? "That's you" : lastOwner ? 'Last owner' : undefined;
+              return (
+                <tr key={m.id} className="border-b border-hairline/60 last:border-0">
+                  <td className="px-2 py-1.5 text-xs text-text">
+                    {m.name}
+                    {isSelf && <span className="ml-1.5 text-2xs text-faint">(you)</span>}
+                  </td>
+                  <td className="tabular max-w-[12rem] truncate px-2 py-1.5 text-2xs text-muted">{m.email}</td>
+                  <td className="px-2 py-1.5 text-right">
+                    {canEditRole ? (
+                      <select
+                        value={m.role}
+                        aria-label={`${m.name} role`}
+                        className="tabular rounded-sm border border-hairline bg-bg-deep px-1.5 py-0.5 text-2xs uppercase text-text focus-ring"
+                        onChange={(e) => void setRole(m.id, e.target.value as UserRole)}
+                      >
+                        {ROLES_BY_SENIORITY.map((r) => (
+                          <option key={r} value={r} disabled={r !== m.role && !canAssignRole(actor, r)}>
+                            {USER_ROLE_LABELS[r]}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className="tabular text-2xs uppercase text-muted">{USER_ROLE_LABELS[m.role]}</span>
+                    )}
+                  </td>
+                  {canManage && (
+                    <td className="px-2 py-1.5 text-right">
+                      <button
+                        type="button"
+                        onClick={() => void onDelete(m.id, m.name)}
+                        disabled={isSelf || lastOwner}
+                        aria-label={`Remove ${m.name}`}
+                        title={blockReason ? `Can't remove: ${blockReason.toLowerCase()}` : `Remove ${m.name}`}
+                        className="rounded-sm p-1 text-faint transition-colors hover:text-accent-red focus-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:text-faint"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+                      </button>
+                    </td>
                   )}
-                </td>
-              </tr>
-            ))}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
-      {!canManage && <ReadOnlyHint>Managing members &amp; roles requires the Owner role.</ReadOnlyHint>}
+
+      {canManage ? (
+        <AddMemberForm actor={actor} />
+      ) : (
+        <ReadOnlyHint>Managing members &amp; roles requires the Owner role.</ReadOnlyHint>
+      )}
     </div>
+  );
+}
+
+/** Inline add-member form (name + email + a role the actor is allowed to assign). */
+function AddMemberForm({ actor }: { actor: UserRole }) {
+  const add = useMembersRegistry((s) => s.add);
+  const assignable = ROLES_BY_SENIORITY.filter((r) => canAssignRole(actor, r));
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState<UserRole>(assignable[assignable.length - 1] ?? 'viewer');
+  const [busy, setBusy] = useState(false);
+
+  const emailValid = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim());
+  const valid = name.trim().length > 0 && emailValid && !busy;
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!valid) return;
+    setBusy(true);
+    const res = await add({ name: name.trim(), email: email.trim(), role });
+    setBusy(false);
+    if (res.ok) {
+      toast.success(`Added ${name.trim()}.`);
+      setName('');
+      setEmail('');
+    } else {
+      toast.error(res.error ?? 'Could not add member.');
+    }
+  }
+
+  if (assignable.length === 0) {
+    return <ReadOnlyHint>Your role can't assign any roles below it.</ReadOnlyHint>;
+  }
+
+  return (
+    <form onSubmit={submit} className="mt-3 flex flex-wrap items-center gap-2">
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Name"
+        aria-label="New member name"
+        className="min-w-[8rem] flex-1 rounded-sm border border-hairline bg-bg-deep px-2 py-1.5 text-xs text-text focus-ring"
+      />
+      <input
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        placeholder="email@workspace"
+        aria-label="New member email"
+        className="min-w-[10rem] flex-1 rounded-sm border border-hairline bg-bg-deep px-2 py-1.5 text-xs text-text focus-ring"
+      />
+      <select
+        value={role}
+        onChange={(e) => setRole(e.target.value as UserRole)}
+        aria-label="New member role"
+        className="tabular rounded-sm border border-hairline bg-bg-deep px-1.5 py-1.5 text-2xs uppercase text-text focus-ring"
+      >
+        {assignable.map((r) => (
+          <option key={r} value={r}>
+            {USER_ROLE_LABELS[r]}
+          </option>
+        ))}
+      </select>
+      <button
+        type="submit"
+        disabled={!valid}
+        className={cn(
+          'flex items-center gap-1.5 rounded-sm border px-3 py-1.5 text-2xs uppercase tracking-wider transition-colors focus-ring',
+          valid
+            ? 'border-accent-cyan/40 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20'
+            : 'cursor-not-allowed border-hairline text-faint',
+        )}
+      >
+        <Plus className="h-3 w-3" strokeWidth={2} /> {busy ? 'Adding…' : 'Add member'}
+      </button>
+    </form>
   );
 }
 
@@ -580,51 +688,114 @@ function Kpi({ label, value, accent }: { label: string; value: string; accent?: 
 }
 
 // ── Integrations ─────────────────────────────────────────────────────────────────
+
+/** Honest connection states for a local-first app. */
+type IntegrationStatus = 'live' | 'configured' | 'offline' | 'gated';
+
+const STATUS_META: Record<IntegrationStatus, { label: string; accent: 'green' | 'amber' | 'faint' }> = {
+  live: { label: 'CONNECTED', accent: 'green' },
+  configured: { label: 'CONFIGURED', accent: 'green' },
+  offline: { label: 'NOT REACHABLE', accent: 'amber' },
+  gated: { label: 'NOT CONFIGURED · DOCKER/CREDS', accent: 'faint' },
+};
+
+function StatusChip({ status }: { status: IntegrationStatus }) {
+  const meta = STATUS_META[status];
+  if (meta.accent === 'faint') {
+    return (
+      <span className="tabular rounded-sm border border-hairline px-1.5 py-0.5 text-2xs uppercase text-faint">
+        {meta.label}
+      </span>
+    );
+  }
+  const c = accentVar(meta.accent);
+  return (
+    <span
+      className="tabular rounded-sm border px-1.5 py-0.5 text-2xs uppercase"
+      style={{ color: c, borderColor: `color-mix(in oklab, ${c} 40%, transparent)` }}
+    >
+      {meta.label}
+    </span>
+  );
+}
+
 function IntegrationsPane() {
   const canManage = useCan('integrations.manage');
-  const services: { name: string; status: 'connected' | 'gated' }[] = [
-    { name: 'CMA (Managed Agents)', status: 'gated' },
-    { name: 'Temporal', status: 'gated' },
-    { name: 'Redis Streams', status: 'gated' },
-    { name: 'Postgres + pgvector', status: 'gated' },
+  const cfg = useCockpit((s) => s.providerConfig);
+  const [ollama, setOllama] = useState<{ reachable: boolean; count: number } | null>(null);
+
+  // Live check: is the local Ollama daemon actually reachable? (Real connection, no Docker.)
+  useEffect(() => {
+    let cancelled = false;
+    setOllama(null);
+    void fetch(`/api/ollama/models?baseUrl=${encodeURIComponent(cfg.ollamaBaseUrl)}`, { cache: 'no-store' })
+      .then((r) => (r.ok ? (r.json() as Promise<{ reachable: boolean; models: unknown[] }>) : null))
+      .then((d) => {
+        if (!cancelled) setOllama({ reachable: !!d?.reachable, count: d?.models?.length ?? 0 });
+      })
+      .catch(() => {
+        if (!cancelled) setOllama({ reachable: false, count: 0 });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cfg.ollamaBaseUrl]);
+
+  const ollamaStatus: IntegrationStatus = ollama == null ? 'offline' : ollama.reachable ? 'live' : 'offline';
+  const claudeStatus: IntegrationStatus = cfg.anthropicApiKey.trim() ? 'configured' : 'gated';
+
+  // Local-first: the two model backends can connect NOW; the prod data plane is genuinely
+  // gated behind Docker + creds — labeled honestly, not as if broken.
+  const services: { name: string; status: IntegrationStatus; note: string }[] = [
+    {
+      name: 'Ollama (local models)',
+      status: ollamaStatus,
+      note:
+        ollama == null
+          ? 'Checking the local daemon…'
+          : ollama.reachable
+            ? `${cfg.ollamaBaseUrl} · ${ollama.count} model${ollama.count === 1 ? '' : 's'} installed`
+            : `${cfg.ollamaBaseUrl} · daemon not reachable — start Ollama`,
+    },
+    {
+      name: 'Claude (Messages API)',
+      status: claudeStatus,
+      note: claudeStatus === 'configured' ? 'API key set in AI Provider' : 'Add an API key in Settings → AI Provider',
+    },
+    { name: 'CMA (Managed Agents)', status: 'gated', note: 'Cloud sandbox — requires Anthropic CMA credentials' },
+    { name: 'Temporal', status: 'gated', note: 'Durable workflows — requires docker compose up' },
+    { name: 'Redis Streams', status: 'gated', note: 'Event transport — requires docker compose up' },
+    { name: 'Postgres + pgvector', status: 'gated', note: 'Multi-tenant store — requires docker compose up' },
   ];
-  // Credentials are referenced by VAULT HANDLE — never a raw secret (egress injection).
-  const creds = [
-    { name: 'GitHub', ref: 'vault://southbay/github-token' },
-    { name: 'Slack', ref: 'vault://southbay/slack-bot-token' },
-  ];
+
   return (
     <div className="flex flex-col gap-3">
       <div className="panel p-3">
-        <SectionLabel>Service Connections</SectionLabel>
-        <ul className="mt-3 flex flex-col gap-2">
+        <SectionLabel right={<span className="tabular text-2xs text-faint">LOCAL-FIRST</span>}>
+          Service Connections
+        </SectionLabel>
+        <ul className="mt-3 flex flex-col gap-2.5">
           {services.map((s) => (
-            <li key={s.name} className="flex items-center justify-between gap-3 border-b border-hairline/60 py-1.5 last:border-0">
-              <span className="text-xs text-muted">{s.name}</span>
-              <span
-                className="tabular rounded-sm border px-1.5 py-0.5 text-2xs uppercase"
-                style={{
-                  color: accentVar(s.status === 'connected' ? 'green' : 'amber'),
-                  borderColor: `color-mix(in oklab, ${accentVar(s.status === 'connected' ? 'green' : 'amber')} 40%, transparent)`,
-                }}
-              >
-                {s.status === 'connected' ? 'CONNECTED' : 'GATED (docker/creds)'}
-              </span>
+            <li key={s.name} className="flex items-center justify-between gap-3 border-b border-hairline/60 pb-2.5 last:border-0 last:pb-0">
+              <div className="min-w-0">
+                <div className="text-xs text-text">{s.name}</div>
+                <div className="truncate text-2xs text-faint">{s.note}</div>
+              </div>
+              <StatusChip status={s.status} />
             </li>
           ))}
         </ul>
       </div>
       <div className="panel p-3">
-        <SectionLabel>Credentials (CMA Vault refs — no secrets in the app)</SectionLabel>
-        <ul className="mt-3 flex flex-col gap-2">
-          {creds.map((c) => (
-            <li key={c.name} className="flex items-center justify-between gap-3 border-b border-hairline/60 py-1.5 last:border-0">
-              <span className="text-xs text-muted">{c.name}</span>
-              <span className="tabular text-2xs text-faint">{c.ref}</span>
-            </li>
-          ))}
-        </ul>
-        {!canManage && <ReadOnlyHint>Managing integrations &amp; credentials requires the Owner role.</ReadOnlyHint>}
+        <SectionLabel>Credentials</SectionLabel>
+        <p className="mt-2 text-2xs leading-relaxed text-faint">
+          The local cockpit holds <span className="text-muted">no secrets</span>. In the gated prod
+          path, agent credentials live in <span className="font-mono text-muted">CMA Vaults</span> and
+          are injected at egress (referenced by handle, e.g.{' '}
+          <span className="font-mono text-muted">vault://&lt;org&gt;/github-token</span>) — never stored
+          in the app, artifacts, or event history.
+        </p>
+        {!canManage && <ReadOnlyHint>Managing integrations requires the Owner role.</ReadOnlyHint>}
       </div>
     </div>
   );

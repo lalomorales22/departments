@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useCallback, useEffect } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useCockpit } from '@/lib/store';
 import { useRealtime } from '@/lib/realtime';
@@ -12,6 +12,7 @@ import { LeftRail } from '../left/LeftRail';
 import { CenterColumn } from '../center/CenterColumn';
 import { InspectorPanel } from '../right/InspectorPanel';
 import { CommandPalette } from '../command/CommandPalette';
+import { CreationModals } from '../command/CreationModals';
 import { ShortcutSheet } from '../command/ShortcutSheet';
 import { KeyboardChords } from '../command/KeyboardChords';
 import { Toaster } from './Toaster';
@@ -22,7 +23,8 @@ import { Toaster } from './Toaster';
  * selected loop.
  */
 export function AppShell() {
-  const { selectedLoopId, leftCollapsed, rightCollapsed, toggleLeft, toggleRight } = useCockpit();
+  const { selectedLoopId, leftCollapsed, rightCollapsed, toggleLeft, toggleRight, rightWidth } =
+    useCockpit();
 
   // Load the real loop registry once, then make sure a valid loop is selected (the first
   // one, unless a persisted selection is still present).
@@ -49,7 +51,7 @@ export function AppShell() {
     const params = new URLSearchParams(window.location.search);
     if (!params.has('run')) return;
     const target = params.get('run') || useCockpit.getState().selectedLoopId;
-    useCockpit.getState().setSelectedLoop(target);
+    if (target) useCockpit.getState().enterLoop(target);
     void useRealtime.getState().runLoop(target);
   }, []);
 
@@ -77,12 +79,14 @@ export function AppShell() {
           <CenterColumn loopId={selectedLoopId} />
         </main>
 
-        {/* RIGHT */}
+        {/* RIGHT — drag handle + resizable/collapsible inspector */}
+        {!rightCollapsed && <ResizeHandle />}
         <aside
           className={cn(
-            'shrink-0 overflow-hidden border-l border-hairline bg-bg transition-[width] duration-200 ease-out',
-            rightCollapsed ? 'w-9' : 'w-[344px]',
+            'shrink-0 overflow-hidden border-l border-hairline bg-bg',
+            rightCollapsed && 'w-9 transition-[width] duration-200 ease-out',
           )}
+          style={rightCollapsed ? undefined : { width: rightWidth }}
         >
           {rightCollapsed ? (
             <CollapsedStrip side="right" onExpand={toggleRight} label="INSPECTOR" />
@@ -96,9 +100,53 @@ export function AppShell() {
 
       {/* overlays + global keyboard layer */}
       <CommandPalette />
+      <CreationModals />
       <ShortcutSheet />
       <KeyboardChords />
       <Toaster />
+    </div>
+  );
+}
+
+/**
+ * A thin drag rail between the center and the inspector. Dragging resizes the inspector
+ * (width = viewport − pointerX, clamped in the store); double-click collapses it.
+ */
+function ResizeHandle() {
+  const setRightWidth = useCockpit((s) => s.setRightWidth);
+  const toggleRight = useCockpit((s) => s.toggleRight);
+
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      const move = (ev: PointerEvent) => setRightWidth(window.innerWidth - ev.clientX);
+      const up = () => {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', up);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      };
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
+    },
+    [setRightWidth],
+  );
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize inspector"
+      onPointerDown={onPointerDown}
+      onDoubleClick={toggleRight}
+      className="group relative w-1 shrink-0 cursor-col-resize bg-hairline transition-colors hover:bg-accent-cyan/60"
+      title="Drag to resize · double-click to collapse"
+    >
+      {/* widen the hit target without taking layout space */}
+      <span className="absolute inset-y-0 -left-1 -right-1" aria-hidden />
     </div>
   );
 }

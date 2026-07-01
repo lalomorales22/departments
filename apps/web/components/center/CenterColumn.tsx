@@ -1,6 +1,8 @@
 'use client';
 
+import { ChevronLeft } from 'lucide-react';
 import { useCockpit } from '@/lib/store';
+import { useLoopById } from '@/lib/loops-client';
 import { LoopHeader } from './LoopHeader';
 import { LoopPipeline } from './LoopPipeline';
 import { AgentGrid } from './AgentGrid';
@@ -8,28 +10,46 @@ import { KanbanBoard } from './KanbanBoard';
 import { MetricGrid } from './MetricGrid';
 import { LogConsole } from './LogConsole';
 import { ActivityMap } from './ActivityMap';
-import { AnalyticsView } from './AnalyticsView';
-import { ArtifactsView } from './ArtifactsView';
-import { SettingsView } from './SettingsView';
 import { ApprovalBanner } from './ApprovalBanner';
+import { OrgView } from './OrgView';
 
 /**
- * The center instrument stack. DASHBOARD shows the full cockpit; AGENTS / TASKS focus
- * a single organism; ARTIFACTS / ANALYTICS / SETTINGS are labeled stubs (built out in
- * later phases). The header + pipeline are always present so the active loop reads
- * clearly regardless of tab.
+ * The center column routes on the IA mode (Phase 8): ORG shows the whole-org aggregate
+ * tabs; LOOP shows a single loop's dedicated workspace — its header, live pipeline,
+ * agents, task board, metrics, and console on one scrolling page, with a breadcrumb
+ * back to the org.
  */
 export function CenterColumn({ loopId }: { loopId: string }) {
-  const activeTab = useCockpit((s) => s.activeTab);
+  const viewMode = useCockpit((s) => s.viewMode);
+  if (viewMode === 'org') return <OrgView />;
+  return <LoopWorkspace loopId={loopId} />;
+}
+
+function LoopWorkspace({ loopId }: { loopId: string }) {
+  const loop = useLoopById(loopId);
+  const backToOrg = useCockpit((s) => s.backToOrg);
 
   return (
     <div className="flex flex-col gap-3 p-3">
-      <LoopHeader loopId={loopId} />
-      <LoopPipeline loopId={loopId} />
-      <ApprovalBanner loopId={loopId} />
+      <Breadcrumb name={loop?.displayName} level={loop?.level} onBack={backToOrg} />
 
-      {activeTab === 'DASHBOARD' && (
+      {!loopId || !loop ? (
+        <div className="panel flex flex-col items-center gap-2 px-4 py-10 text-center">
+          <p className="text-sm text-muted">That department is no longer available.</p>
+          <button
+            type="button"
+            onClick={backToOrg}
+            className="rounded-sm border border-hairline px-3 py-1.5 text-2xs uppercase tracking-wider text-muted hover:text-text focus-ring"
+          >
+            Back to org
+          </button>
+        </div>
+      ) : (
         <>
+          <LoopHeader loopId={loopId} />
+          <LoopPipeline loopId={loopId} />
+          <ApprovalBanner loopId={loopId} />
+
           <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
             <AgentGrid loopId={loopId} />
             <KanbanBoard loopId={loopId} />
@@ -43,21 +63,29 @@ export function CenterColumn({ loopId }: { loopId: string }) {
           </div>
         </>
       )}
-
-      {activeTab === 'AGENTS' && (
-        <>
-          <AgentGrid loopId={loopId} columns={3} />
-          <div id="log-console">
-            <LogConsole loopId={loopId} />
-          </div>
-        </>
-      )}
-
-      {activeTab === 'TASKS' && <KanbanBoard loopId={loopId} />}
-
-      {activeTab === 'ARTIFACTS' && <ArtifactsView loopId={loopId} />}
-      {activeTab === 'ANALYTICS' && <AnalyticsView />}
-      {activeTab === 'SETTINGS' && <SettingsView />}
     </div>
+  );
+}
+
+/** `← ORG / <loop>` — the return path from a loop workspace to the whole-org view. */
+function Breadcrumb({ name, level, onBack }: { name?: string; level?: number; onBack: () => void }) {
+  return (
+    <nav className="flex items-center gap-1.5 text-2xs" aria-label="Breadcrumb">
+      <button
+        type="button"
+        onClick={onBack}
+        className="flex items-center gap-1 rounded-sm px-1.5 py-1 font-mono uppercase tracking-wider text-muted transition-colors hover:text-accent-cyan focus-ring"
+      >
+        <ChevronLeft className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+        Org
+      </button>
+      <span className="text-faint" aria-hidden>
+        /
+      </span>
+      <span className="flex items-center gap-1.5 font-medium text-text">
+        {name ?? '—'}
+        {level != null && <span className="font-mono text-2xs text-faint">L{level}</span>}
+      </span>
+    </nav>
   );
 }

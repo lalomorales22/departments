@@ -309,42 +309,42 @@ Because a loop "re‑runs constantly," cost and runaway control are **structural
 
 **Dependencies.** Phase 6 (real runs, streamed events, cost/token metrics).
 
-## Phase 8 — Information Architecture: Org Dashboard ↔ Per‑Loop Workspace
+## Phase 8 — Information Architecture: Org Dashboard ↔ Per‑Loop Workspace ✅ SHIPPED
 
 **Goal.** Separate the whole‑app **mega‑dashboard** from a single loop's **workspace**. The 6 top tabs are org‑wide; clicking a loop opens *that loop's* page.
 
 ### Navigation model
-- [ ] Define two modes — **ORG view** (the 6 top tabs aggregate across ALL loops) and **LOOP view** (a selected loop's dedicated workspace) — with a clear switch: clicking a loop in the left hierarchy enters its workspace; a breadcrumb / "back to org" returns.
-- [ ] **Top 6 tabs become org‑wide aggregates:** DASHBOARD (all loops' health/status/spend), AGENTS (every agent across loops), TASKS (all tasks), ARTIFACTS (all artifacts), ANALYTICS (org rollup), SETTINGS (workspace‑level).
-- [ ] **Per‑loop workspace:** clicking a loop opens its own page — its pipeline + live progress, agents, tasks, artifacts, history, and console, scoped to that loop.
+- [x] Define two modes — **ORG view** (the 6 top tabs aggregate across ALL loops) and **LOOP view** (a selected loop's dedicated workspace) — with a clear switch: clicking a loop in the left hierarchy enters its workspace; a breadcrumb / "back to org" returns. *(`store.ts` `viewMode`/`enterLoop`/`backToOrg`; `CenterColumn` routes on it; `LoopTreeNode`/`CommandBar`/palette call `enterLoop`; the six tabs (`setTab`) always return to ORG.)*
+- [x] **Top 6 tabs become org‑wide aggregates:** DASHBOARD (all loops' health/status/spend), AGENTS (every agent across loops), TASKS (all tasks), ARTIFACTS (all artifacts), ANALYTICS (org rollup), SETTINGS (workspace‑level). *(`components/center/OrgView.tsx` — fleet dashboard + org agents/tasks; ARTIFACTS reuses the cross‑loop browser; ANALYTICS/SETTINGS were already org‑scoped.)*
+- [x] **Per‑loop workspace:** clicking a loop opens its own page — its pipeline + live progress, agents, tasks, and console, scoped to that loop (artifacts/history live in the inspector). *(`CenterColumn` `LoopWorkspace` + `← Org / <loop>` breadcrumb.)*
 
 ### Right sidebar (Inspector) redesign
-- [ ] **Merge DETAILS / CONFIG / HISTORY into ONE scrolling page** (sections stacked) instead of three tabs.
-- [ ] Make the right sidebar **resizable** (drag handle) and **toggle‑collapsible**; persist width + collapsed state. (Left rail too, if cheap.)
-- [ ] Decide the inspector's role in the new IA (per‑loop side context vs folded into the per‑loop workspace page).
+- [x] **Merge DETAILS / CONFIG / HISTORY into ONE scrolling page** (sections stacked) instead of three tabs. *(`InspectorPanel.tsx` — sticky section headers; ORG mode shows an org summary + drill‑in hint.)*
+- [x] Make the right sidebar **resizable** (drag handle) and **toggle‑collapsible**; persist width + collapsed state. *(`AppShell` `ResizeHandle` → `store.rightWidth`, clamped 280–560, persisted; double‑click collapses. Left rail stays fixed‑width + collapsible.)*
+- [x] Decide the inspector's role in the new IA: **per‑loop side context** in LOOP view; a whole‑org summary in ORG view.
 
 ### Creation flows
-- [ ] **New Loop / New Agent / New Task** (⌘N / ⌘A / ⌘T) open **dedicated creation modals**, NOT the global‑search window (⌘K). New Loop = name + mission + level/parent → a persisted department. New Agent / New Task scoped to a loop with the right fields (or a clear scope + honest state if not yet backed).
+- [x] **New Loop / New Agent / New Task** (⌘N / ⌘A / ⌘T) open **dedicated creation modals**, NOT the global‑search window (⌘K). New Loop = name + mission + level/parent → a persisted department. New Agent / New Task are scoped to a loop with honest state where not yet backed. *(`components/command/CreationModals.tsx`; wired from `KeyboardChords`, `QuickActionList`, and the palette ACTIONS group.)*
 
-**Acceptance — done when:** the 6 top tabs show whole‑org aggregates; clicking any loop in the hierarchy opens its own workspace page with that loop's progress/details; the right inspector is one scrolling, resizable, collapsible panel; ⌘N/⌘A/⌘T each open a distinct creation modal (never the search window).
+**Acceptance — done when:** the 6 top tabs show whole‑org aggregates; clicking any loop in the hierarchy opens its own workspace page with that loop's progress/details; the right inspector is one scrolling, resizable, collapsible panel; ⌘N/⌘A/⌘T each open a distinct creation modal (never the search window). ✅
 
 **Dependencies.** Phase 6 (loop registry + per‑loop data); Phase 7 (the per‑loop progress view it embeds).
 
-## Phase 9 — Members, Roles & Integrations (real management)
+## Phase 9 — Members, Roles & Integrations (real management) ✅ SHIPPED
 
 **Goal.** Settings reflects reality: manage real members; integrations tell the truth.
 
 ### Members & Roles
-- [ ] **Remove the 4 default fake members** (Alex Rivera / Commander / Sam Operator / Jordan Viewer). Start from just the real local commander.
-- [ ] **Add member** — a modal (name + email + role), persisted (local store / SQLite).
-- [ ] **Delete member** — with a guard (can't delete the last owner / yourself).
-- [ ] Role assignment respects the RBAC matrix (`canAssignRole` — no privilege escalation).
+- [x] **Remove the 4 default fake members** (Alex Rivera / Commander / Sam Operator / Jordan Viewer). Start from just the real local commander. *(`SettingsView` `MembersPane` now reads `lib/members-client.ts`; the SQLite `members` table seeds only `LOCAL_COMMANDER` on first read — `lib/server/db.ts`.)*
+- [x] **Add member** — an inline form (name + email + role), persisted to SQLite via `POST /api/org/members`. *(`AddMemberForm`; role options limited to what the actor may assign.)*
+- [x] **Delete member** — server-side guards refuse removing yourself (the local commander) or the last owner (409); the row's trash button is disabled in those cases. *(`deleteMember` in `db.ts`, `DELETE /api/org/members/[id]`.)*
+- [x] Role assignment respects the RBAC matrix (`canAssignRole` — no privilege escalation). *(Add + row role selects only offer roles strictly below the actor; `members.manage`/`role.assign` are Owner-only, so a Commander sees a read-only roster.)*
 
 ### Integrations
-- [ ] **Fix the "GATED (DOCKER/CREDS)" labels** — verify accuracy and relabel honestly for a local‑first app: what's actually connectable now vs genuinely gated. (e.g. **Ollama** is live/connected locally; CMA / Temporal / Redis / Postgres are truly gated until Docker/creds.)
-- [ ] Surface real connections with live status (Ollama daemon reachable ✓) and a way to **connect/configure** the real ones; show gated ones as "not configured · requires Docker/creds," not as if they're broken.
+- [x] **Fix the "GATED (DOCKER/CREDS)" labels** — relabeled honestly for a local‑first app. *(`IntegrationsPane`: `live`/`configured`/`offline`/`gated` states.)*
+- [x] Surface real connections with live status — **Ollama** pings the daemon (`/api/ollama/models`) and shows CONNECTED + model count (or NOT REACHABLE); **Claude** shows CONFIGURED once a key is set (else routes to AI Provider). CMA / Temporal / Redis / Postgres read **"NOT CONFIGURED · DOCKER/CREDS"** in a muted style with a one-line reason — not as if broken. Credentials section is honest that the local app holds no secrets (CMA Vault is the gated prod path).
 
-**Acceptance — done when:** Members starts clean (no fake people) and supports add + delete with correct role gating; Integrations honestly reflects what's connected (Ollama live) vs gated, with a path to configure the real ones.
+**Acceptance — done when:** Members starts clean (no fake people) and supports add + delete with correct role gating; Integrations honestly reflects what's connected (Ollama live) vs gated, with a path to configure the real ones. ✅
 
 **Dependencies.** Phase 6 (real workspace identity + SQLite for persistence).
 

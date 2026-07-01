@@ -17,7 +17,7 @@ import { toast } from '@/lib/toast';
  * A real cycle's events stream live into the console; the loop is persisted to the DB.
  */
 export function CommandBar() {
-  const setSelectedLoop = useCockpit((s) => s.setSelectedLoop);
+  const enterLoop = useCockpit((s) => s.enterLoop);
   const selectedLoopId = useCockpit((s) => s.selectedLoopId);
   const runLoop = useRealtime((s) => s.runLoop);
   const running = useRealtime((s) => s.runStatus[selectedLoopId] === 'running');
@@ -53,7 +53,7 @@ export function CommandBar() {
       }
     }
     if (target) {
-      setSelectedLoop(target.id);
+      enterLoop(target.id);
       if (isRun) void runLoop(target.id);
     } else if (query) {
       toast.info(`No department matches “${query}”.`);
